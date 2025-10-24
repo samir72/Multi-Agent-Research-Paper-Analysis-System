@@ -364,7 +364,7 @@ If you use this system in your research, please cite:
 ```bibtex
 @software{research_paper_analyzer,
   title={Multi-Agent Research Paper Analysis System},
-  author={Sayed Arizvi},
+  author={Sayed A Rizvi},
   year={2025},
   url={https://github.com/samir72/Multi-Agent-Research-Paper-Analysis-System}
 }
