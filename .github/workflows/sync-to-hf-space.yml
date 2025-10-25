@@ -1,0 +1,31 @@
+name: Sync to Hugging Face Space
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  sync-to-space:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          lfs: true  # include large files if any
+
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          # Set Git identity for the workflow
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+
+          # Add Hugging Face Space as a remote
+          git remote add hf https://$HF_TOKEN@huggingface.co/spaces/samir72/Multi-Agent-Research-Paper-Analysis-System
+
+          # Force-push main to the Space
+          git push --force hf main
