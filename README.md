@@ -204,7 +204,8 @@ The system implements multiple techniques to minimize hallucinations:
 - Request batching for embeddings
 - Cached embeddings in ChromaDB (don't re-embed same papers)
 - Token usage logging per request
-- Semantic caching for repeated queries with proper Pydantic model serialization
+- Semantic caching for repeated queries with Pydantic V2 model serialization (`mode='json'`)
+- JSON-compatible cache storage with automatic datetime conversion
 - Target: <$0.50 per analysis session
 
 ### Error Handling
@@ -417,6 +418,8 @@ For issues, questions, or feature requests, please:
 ## Changelog
 
 ### Latest Updates (2025)
+- ✅ Fixed datetime JSON serialization error (added `mode='json'` to `model_dump()`)
+- ✅ Fixed AttributeError when formatting cached results (separated cache data from output data)
 - ✅ Fixed Pydantic V2 deprecation warning (replaced `.dict()` with `.model_dump()`)
 - ✅ Added GitHub Actions workflow for automated deployment to Hugging Face Spaces
 - ✅ Fixed JSON serialization error in semantic cache (Pydantic model conversion)
