@@ -14,8 +14,9 @@ license: mit
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Gradio](https://img.shields.io/badge/Gradio-4.x-orange)](https://gradio.app/)
+[![Gradio](https://img.shields.io/badge/Gradio-5.49.1-orange)](https://gradio.app/)
 [![Azure OpenAI](https://img.shields.io/badge/Azure-OpenAI-0078D4)](https://azure.microsoft.com/en-us/products/ai-services/openai-service)
+[![Sync to HF Space](https://github.com/samir72/Multi-Agent-Research-Paper-Analysis-System/actions/workflows/sync-to-hf-space.yml/badge.svg)](https://github.com/samir72/Multi-Agent-Research-Paper-Analysis-System/actions/workflows/sync-to-hf-space.yml)
 
 A production-ready multi-agent system that analyzes academic papers from arXiv, extracts insights, synthesizes findings across papers, and provides deterministic, citation-backed responses to research questions.
 
@@ -33,6 +34,9 @@ A production-ready multi-agent system that analyzes academic papers from arXiv, 
 - [Testing](#testing)
 - [Performance](#performance)
 - [Deployment](#deployment)
+  - [GitHub Actions - Automated Deployment](#github-actions---automated-deployment)
+  - [Hugging Face Spaces](#hugging-face-spaces-manual-deployment)
+  - [Local Docker](#local-docker)
 - [Programmatic Usage](#programmatic-usage)
 - [Contributing](#contributing)
 - [Support](#support)
@@ -278,7 +282,33 @@ Tests use:
 
 ## Deployment
 
-### Hugging Face Spaces
+### GitHub Actions - Automated Deployment
+
+This repository includes a GitHub Actions workflow that automatically syncs to Hugging Face Spaces on every push to the `main` branch.
+
+**Workflow File:** `.github/workflows/sync-to-hf-space.yml`
+
+**Features:**
+- ✅ Auto-deploys to Hugging Face Space on every push to main
+- ✅ Manual trigger available via `workflow_dispatch`
+- ✅ Includes Git LFS support for large files
+- ✅ Force pushes to keep Space in sync with GitHub
+
+**Setup Instructions:**
+
+1. Create a Hugging Face Space at `https://huggingface.co/spaces/your-username/your-space-name`
+2. Get your Hugging Face token from [Settings > Access Tokens](https://huggingface.co/settings/tokens)
+3. Add the token as a GitHub secret:
+   - Go to your GitHub repository → Settings → Secrets and variables → Actions
+   - Add a new secret named `HF_TOKEN` with your Hugging Face token
+4. Update the workflow file with your Hugging Face username and space name (line 31)
+5. Push to main branch - the workflow will automatically deploy!
+
+**Monitoring:**
+- View workflow runs: [Actions tab](https://github.com/samir72/Multi-Agent-Research-Paper-Analysis-System/actions)
+- Workflow status badge shows current deployment status
+
+### Hugging Face Spaces (Manual Deployment)
 
 1. Create a new Space on Hugging Face
 2. Upload all files from this repository
@@ -387,6 +417,7 @@ For issues, questions, or feature requests, please:
 ## Changelog
 
 ### Latest Updates (2025)
+- ✅ Added GitHub Actions workflow for automated deployment to Hugging Face Spaces
 - ✅ Fixed JSON serialization error in semantic cache (Pydantic model conversion)
 - ✅ Added comprehensive test suite for Analyzer Agent (18 tests)
 - ✅ Added pytest and pytest-mock to dependencies
@@ -398,9 +429,10 @@ For issues, questions, or feature requests, please:
 ### Coming Soon
 - [ ] Tests for Retriever, Synthesis, and Citation agents
 - [ ] Integration tests for full workflow
-- [ ] CI/CD pipeline with automated testing
+- [ ] CI/CD pipeline with automated testing (GitHub Actions already set up for deployment)
 - [ ] Docker containerization
 - [ ] Performance benchmarking suite
+- [ ] Pre-commit hooks for code quality
 
 ---
 
