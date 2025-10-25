@@ -99,6 +99,11 @@ class ResearchPaperAnalyzer:
 
             if cached_result:
                 logger.info("Using cached result")
+                # Convert dicts back to Pydantic models
+                from utils.schemas import Paper, Analysis, ValidatedOutput
+                cached_result["papers"] = [Paper(**p) for p in cached_result["papers"]]
+                cached_result["analyses"] = [Analysis(**a) for a in cached_result["analyses"]]
+                cached_result["validated_output"] = ValidatedOutput(**cached_result["validated_output"])
                 return self._format_output(cached_result)
 
             # Initialize state
@@ -145,11 +150,11 @@ class ResearchPaperAnalyzer:
 
             progress(1.0, desc="Complete!")
 
-            # Cache the result
+            # Cache the result (convert Pydantic models to dicts for JSON serialization)
             result = {
-                "papers": state["papers"],
-                "analyses": state["analyses"],
-                "validated_output": state["validated_output"]
+                "papers": [p.dict() for p in state["papers"]],
+                "analyses": [a.dict() for a in state["analyses"]],
+                "validated_output": state["validated_output"].dict()
             }
             self.cache.set(query, query_embedding, result, category)
 
