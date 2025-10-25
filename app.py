@@ -152,9 +152,9 @@ class ResearchPaperAnalyzer:
 
             # Cache the result (convert Pydantic models to dicts for JSON serialization)
             result = {
-                "papers": [p.dict() for p in state["papers"]],
-                "analyses": [a.dict() for a in state["analyses"]],
-                "validated_output": state["validated_output"].dict()
+                "papers": [p.model_dump() for p in state["papers"]],
+                "analyses": [a.model_dump() for a in state["analyses"]],
+                "validated_output": state["validated_output"].model_dump()
             }
             self.cache.set(query, query_embedding, result, category)
 
