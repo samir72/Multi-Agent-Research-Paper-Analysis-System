@@ -4,7 +4,7 @@ emoji: 📚
 colorFrom: blue
 colorTo: green
 sdk: gradio
-sdk_version: 4.x
+sdk_version: 5.49.1
 app_file: app.py
 pinned: false
 license: mit
@@ -200,7 +200,7 @@ The system implements multiple techniques to minimize hallucinations:
 - Request batching for embeddings
 - Cached embeddings in ChromaDB (don't re-embed same papers)
 - Token usage logging per request
-- Semantic caching for repeated queries
+- Semantic caching for repeated queries with proper Pydantic model serialization
 - Target: <$0.50 per analysis session
 
 ### Error Handling
@@ -387,6 +387,7 @@ For issues, questions, or feature requests, please:
 ## Changelog
 
 ### Latest Updates (2025)
+- ✅ Fixed JSON serialization error in semantic cache (Pydantic model conversion)
 - ✅ Added comprehensive test suite for Analyzer Agent (18 tests)
 - ✅ Added pytest and pytest-mock to dependencies
 - ✅ Enhanced error handling and logging across agents
