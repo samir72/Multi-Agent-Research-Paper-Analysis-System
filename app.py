@@ -151,14 +151,19 @@ class ResearchPaperAnalyzer:
             progress(1.0, desc="Complete!")
 
             # Cache the result (convert Pydantic models to dicts for JSON serialization)
-            result = {
+            cache_data = {
                 "papers": [p.model_dump() for p in state["papers"]],
                 "analyses": [a.model_dump() for a in state["analyses"]],
                 "validated_output": state["validated_output"].model_dump()
             }
-            self.cache.set(query, query_embedding, result, category)
+            self.cache.set(query, query_embedding, cache_data, category)
 
-            # Format output
+            # Format output using state which has Pydantic models
+            result = {
+                "papers": state["papers"],
+                "analyses": state["analyses"],
+                "validated_output": state["validated_output"]
+            }
             return self._format_output(result)
 
         except Exception as e:
