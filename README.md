@@ -91,10 +91,10 @@ User Query → Retriever Agent → Analyzer Agent → Synthesis Agent → Citati
 - **Embeddings**: Azure OpenAI text-embedding-3-small
 - **Vector Store**: ChromaDB with persistent storage
 - **Agent Framework**: Custom multi-agent orchestration
-- **UI**: Gradio 4.x with tabbed interface
+- **UI**: Gradio 5.49.1 with tabbed interface
 - **Data Source**: arXiv API
 - **Testing**: pytest with comprehensive test suite
-- **Type Safety**: Pydantic schemas for validation
+- **Type Safety**: Pydantic V2 schemas for validation
 
 ## Installation
 
@@ -417,6 +417,7 @@ For issues, questions, or feature requests, please:
 ## Changelog
 
 ### Latest Updates (2025)
+- ✅ Fixed Pydantic V2 deprecation warning (replaced `.dict()` with `.model_dump()`)
 - ✅ Added GitHub Actions workflow for automated deployment to Hugging Face Spaces
 - ✅ Fixed JSON serialization error in semantic cache (Pydantic model conversion)
 - ✅ Added comprehensive test suite for Analyzer Agent (18 tests)
