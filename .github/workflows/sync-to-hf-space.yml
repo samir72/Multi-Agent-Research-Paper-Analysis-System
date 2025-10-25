@@ -20,12 +20,18 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # Set Git identity for the workflow
+          # Fail fast if any prompt would appear
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Actions"
+          git config --global credential.helper ""
+          export GIT_TERMINAL_PROMPT=0
 
-          # Add Hugging Face Space as a remote
-          git remote add hf https://$HF_TOKEN@huggingface.co/spaces/samir72/Multi-Agent-Research-Paper-Analysis-System
+          # Add/replace remote with username + token + .git suffix
+          git remote remove hf 2>/dev/null || true
+          git remote add hf "https://samir72:${HF_TOKEN}@huggingface.co/spaces/samir72/Multi-Agent-Research-Paper-Analysis-System.git"
 
-          # Force-push main to the Space
+          # Optional: verify auth without pushing
+          git ls-remote hf
+
+          # Push main to the Space
           git push --force hf main
