@@ -281,6 +281,33 @@ class ResearchPaperAnalyzer:
             logger.error(f"Workflow error: {str(e)}")
             return self._format_error([str(e)])
 
+    def _format_paper_references(self, paper_ids: list, papers: list) -> str:
+        """
+        Format paper references with title and arXiv ID.
+
+        Args:
+            paper_ids: List of arXiv IDs
+            papers: List of Paper objects
+
+        Returns:
+            Formatted HTML string with paper titles and IDs
+        """
+        # Create a lookup dictionary
+        paper_map = {p.arxiv_id: p for p in papers}
+
+        formatted_refs = []
+        for paper_id in paper_ids:
+            paper = paper_map.get(paper_id)
+            if paper:
+                # Truncate long titles
+                title = paper.title if len(paper.title) <= 60 else paper.title[:57] + "..."
+                formatted_refs.append(f"{title} ({paper_id})")
+            else:
+                # Fallback if paper not found
+                formatted_refs.append(paper_id)
+
+        return "<br>• " + "<br>• ".join(formatted_refs) if formatted_refs else ""
+
     def _format_output(
         self,
         result: Dict[str, Any]
@@ -346,7 +373,7 @@ class ResearchPaperAnalyzer:
             {"".join(f'''
             <div style="background-color: #e8f5e9; padding: 15px; margin-bottom: 10px; border-radius: 5px; border-left: 4px solid #4caf50;">
                 <p style="font-weight: bold;">{cp.statement}</p>
-                <p><strong>Supporting Papers:</strong> {", ".join(cp.supporting_papers)}</p>
+                <p><strong>Supporting Papers:</strong>{self._format_paper_references(cp.supporting_papers, papers)}</p>
                 <p><strong>Confidence:</strong> {cp.confidence:.2%}</p>
             </div>
             ''' for cp in synthesis.consensus_points)}
@@ -357,8 +384,10 @@ class ResearchPaperAnalyzer:
             {"".join(f'''
             <div style="background-color: #fff8e1; padding: 15px; margin-bottom: 10px; border-radius: 5px; border-left: 4px solid #ffa726;">
                 <p style="font-weight: bold;">Topic: {c.topic}</p>
-                <p><strong>Viewpoint A:</strong> {c.viewpoint_a} (Papers: {", ".join(c.papers_a)})</p>
-                <p><strong>Viewpoint B:</strong> {c.viewpoint_b} (Papers: {", ".join(c.papers_b)})</p>
+                <p><strong>Viewpoint A:</strong> {c.viewpoint_a}</p>
+                <p style="margin-left: 20px; color: #555; margin-top: 5px;"><em>Papers:</em>{self._format_paper_references(c.papers_a, papers)}</p>
+                <p style="margin-top: 10px;"><strong>Viewpoint B:</strong> {c.viewpoint_b}</p>
+                <p style="margin-left: 20px; color: #555; margin-top: 5px;"><em>Papers:</em>{self._format_paper_references(c.papers_b, papers)}</p>
             </div>
             ''' for c in synthesis.contradictions)}
         </div>
