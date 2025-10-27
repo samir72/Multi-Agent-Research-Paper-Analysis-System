@@ -95,7 +95,15 @@ class ValidatedOutput(BaseModel):
 
 
 class AgentState(BaseModel):
-    """Schema for LangGraph state management."""
+    """
+    Schema for LangGraph state management.
+
+    Note: This Pydantic model serves as type documentation and validation reference.
+    The actual LangGraph workflow in app.py uses Dict[str, Any] for state to maintain
+    compatibility with Gradio progress tracking and dynamic state updates during execution.
+
+    All fields in this schema correspond to keys in the workflow state dictionary.
+    """
     query: str = Field(..., description="User research question")
     category: Optional[str] = Field(None, description="arXiv category filter")
     num_papers: int = Field(default=5, ge=1, le=20, description="Number of papers to retrieve")

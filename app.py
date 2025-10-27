@@ -10,6 +10,9 @@ from dotenv import load_dotenv
 import gradio as gr
 import pandas as pd
 
+# LangGraph imports
+from langgraph.graph import StateGraph, END
+
 # Load environment variables
 load_dotenv()
 
@@ -70,6 +73,73 @@ class ResearchPaperAnalyzer:
 
         logger.info("Initialization complete")
 
+    def _retriever_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        LangGraph node for retriever agent.
+
+        Args:
+            state: Current workflow state
+
+        Returns:
+            Updated state with papers and chunks
+        """
+        if "progress" in state:
+            state["progress"](0.1, desc="Searching and downloading papers...")
+        return self.retriever_agent.run(state)
+
+    def _analyzer_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        LangGraph node for analyzer agent.
+
+        Args:
+            state: Current workflow state
+
+        Returns:
+            Updated state with analyses
+        """
+        if "progress" in state:
+            state["progress"](0.4, desc="Analyzing individual papers...")
+
+        # Skip if no papers retrieved
+        if state.get("errors") and not state.get("papers"):
+            return state
+
+        return self.analyzer_agent.run(state)
+
+    def _synthesis_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        LangGraph node for synthesis agent.
+
+        Args:
+            state: Current workflow state
+
+        Returns:
+            Updated state with synthesis
+        """
+        if "progress" in state:
+            state["progress"](0.7, desc="Synthesizing findings across papers...")
+
+        # Skip if no analyses available
+        if state.get("errors") and not state.get("analyses"):
+            return state
+
+        return self.synthesis_agent.run(state)
+
+    def _citation_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        LangGraph node for citation agent.
+
+        Args:
+            state: Current workflow state
+
+        Returns:
+            Updated state with validated output and citations
+        """
+        if "progress" in state:
+            state["progress"](0.9, desc="Validating and generating citations...")
+
+        return self.citation_agent.run(state)
+
     def run_workflow(
         self,
         query: str,
@@ -106,8 +176,8 @@ class ResearchPaperAnalyzer:
                 cached_result["validated_output"] = ValidatedOutput(**cached_result["validated_output"])
                 return self._format_output(cached_result)
 
-            # Initialize state
-            state = {
+            # Initialize state for LangGraph workflow
+            initial_state = {
                 "query": query,
                 "category": category if category != "All" else None,
                 "num_papers": num_papers,
@@ -121,32 +191,36 @@ class ResearchPaperAnalyzer:
                     "input_tokens": 0,
                     "output_tokens": 0,
                     "embedding_tokens": 0
-                }
+                },
+                "progress": progress,  # Pass progress tracker to nodes
+                "processing_time": None  # Will be set in citation node
             }
 
-            # Step 1: Retriever Agent
-            progress(0.1, desc="Searching and downloading papers...")
-            state = self.retriever_agent.run(state)
-            if state.get("errors") and not state.get("papers"):
-                return self._format_error(state["errors"])
+            # Build LangGraph workflow
+            workflow = StateGraph(dict)
 
-            # Step 2: Analyzer Agent
-            progress(0.4, desc="Analyzing individual papers...")
-            state = self.analyzer_agent.run(state)
-            if state.get("errors") and not state.get("analyses"):
-                return self._format_error(state["errors"])
+            # Add nodes for each agent
+            workflow.add_node("retriever", self._retriever_node)
+            workflow.add_node("analyzer", self._analyzer_node)
+            workflow.add_node("synthesis", self._synthesis_node)
+            workflow.add_node("citation", self._citation_node)
 
-            # Step 3: Synthesis Agent
-            progress(0.7, desc="Synthesizing findings across papers...")
-            state = self.synthesis_agent.run(state)
-            if state.get("errors") and not state.get("synthesis"):
-                return self._format_error(state["errors"])
+            # Define linear workflow edges
+            workflow.set_entry_point("retriever")
+            workflow.add_edge("retriever", "analyzer")
+            workflow.add_edge("analyzer", "synthesis")
+            workflow.add_edge("synthesis", "citation")
+            workflow.add_edge("citation", END)
 
-            # Step 4: Citation Agent
-            progress(0.9, desc="Validating and generating citations...")
-            processing_time = time.time() - start_time
-            state["processing_time"] = processing_time
-            state = self.citation_agent.run(state)
+            # Compile the workflow
+            app = workflow.compile()
+
+            # Execute the workflow using LangGraph
+            logger.info("Executing LangGraph workflow...")
+            state = app.invoke(initial_state)
+
+            # Calculate processing time
+            state["processing_time"] = time.time() - start_time
 
             progress(1.0, desc="Complete!")
 
