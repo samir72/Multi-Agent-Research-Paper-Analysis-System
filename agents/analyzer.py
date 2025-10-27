@@ -10,7 +10,10 @@ from openai import AzureOpenAI
 from utils.schemas import Analysis, Paper
 from rag.retrieval import RAGRetriever
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 

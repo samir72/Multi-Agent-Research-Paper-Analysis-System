@@ -7,7 +7,10 @@ from typing import List, Optional, Dict, Any
 from rag.vector_store import VectorStore
 from rag.embeddings import EmbeddingGenerator
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 

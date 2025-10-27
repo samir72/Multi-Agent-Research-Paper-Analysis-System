@@ -7,7 +7,10 @@ from typing import List
 from openai import AzureOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 

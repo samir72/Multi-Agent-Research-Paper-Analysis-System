@@ -10,7 +10,10 @@ from openai import AzureOpenAI
 from utils.schemas import Analysis, SynthesisResult, ConsensusPoint, Contradiction, Paper
 from rag.retrieval import RAGRetriever
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 
@@ -100,7 +103,8 @@ Provide your synthesis in the following JSON format:
             "papers_a": ["arxiv_id1"],
             "viewpoint_b": "Second viewpoint",
             "papers_b": ["arxiv_id2"],
-            "citations": ["Evidence for both sides"]
+            "citations": ["Evidence for both sides"],
+            "confidence": 0.0-1.0
         }}
     ],
     "research_gaps": [

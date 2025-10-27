@@ -8,7 +8,10 @@ from datetime import datetime
 from utils.schemas import SynthesisResult, Paper, Citation, ValidatedOutput
 from rag.retrieval import RAGRetriever
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 

@@ -10,7 +10,10 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from utils.schemas import Paper
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 

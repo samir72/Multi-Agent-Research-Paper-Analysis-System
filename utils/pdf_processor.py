@@ -10,7 +10,10 @@ from pypdf import PdfReader
 
 from utils.schemas import PaperChunk, Paper
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 

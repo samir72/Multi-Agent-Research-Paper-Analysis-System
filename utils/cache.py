@@ -8,7 +8,10 @@ from typing import Optional, Dict, Any
 import hashlib
 import numpy as np
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 
