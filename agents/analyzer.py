@@ -5,7 +5,9 @@ import os
 import json
 import logging
 from typing import Dict, Any, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import AzureOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from utils.schemas import Analysis, Paper
 from rag.retrieval import RAGRetriever
@@ -25,7 +27,8 @@ class AnalyzerAgent:
         rag_retriever: RAGRetriever,
         #model: str = "Phi-4-multimodal-instruct",
         model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
-        temperature: float = 0.0
+        temperature: float = 0.0,
+        timeout: int = 60
     ):
         """
         Initialize Analyzer Agent.
@@ -34,17 +37,25 @@ class AnalyzerAgent:
             rag_retriever: RAGRetriever instance
             model: Azure OpenAI model deployment name
             temperature: Temperature for generation (0 for deterministic)
+            timeout: Request timeout in seconds (default: 60)
         """
         self.rag_retriever = rag_retriever
         self.model = model
         self.temperature = temperature
+        self.timeout = timeout
 
-        # Initialize Azure OpenAI client
+        # Circuit breaker for consecutive failures
+        self.consecutive_failures = 0
+        self.max_consecutive_failures = 2
+
+        # Initialize Azure OpenAI client with timeout
         self.client = AzureOpenAI(
             api_key=os.getenv("AZURE_OPENAI_API_KEY"),
             #api_version="2024-02-01",
             api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+            timeout=timeout,
+            max_retries=2  # SDK-level retries
         )
 
     def _create_analysis_prompt(
@@ -88,7 +99,7 @@ Important:
         top_k_chunks: int = 10
     ) -> Analysis:
         """
-        Analyze a single paper.
+        Analyze a single paper with retry logic and circuit breaker.
 
         Args:
             paper: Paper object
@@ -97,6 +108,14 @@ Important:
         Returns:
             Analysis object
         """
+        # Circuit breaker: Skip if too many consecutive failures
+        if self.consecutive_failures >= self.max_consecutive_failures:
+            logger.warning(
+                f"Circuit breaker active: Skipping {paper.arxiv_id} after "
+                f"{self.consecutive_failures} consecutive failures"
+            )
+            raise Exception("Circuit breaker active - too many consecutive failures")
+
         try:
             logger.info(f"Analyzing paper: {paper.arxiv_id}")
 
@@ -129,7 +148,7 @@ Important:
             # Create prompt
             prompt = self._create_analysis_prompt(paper, context)
 
-            # Call Azure OpenAI with temperature=0
+            # Call Azure OpenAI with temperature=0 and output limits
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -137,6 +156,7 @@ Important:
                     {"role": "user", "content": prompt}
                 ],
                 temperature=self.temperature,
+                max_tokens=1500,  # Limit output to prevent slow responses
                 response_format={"type": "json_object"}
             )
 
@@ -159,10 +179,21 @@ Important:
             )
 
             logger.info(f"Analysis completed for {paper.arxiv_id} with confidence {confidence:.2f}")
+
+            # Reset circuit breaker on success
+            self.consecutive_failures = 0
+
             return analysis
 
         except Exception as e:
-            logger.error(f"Error analyzing paper {paper.arxiv_id}: {str(e)}")
+            # Increment circuit breaker on failure
+            self.consecutive_failures += 1
+
+            logger.error(
+                f"Error analyzing paper {paper.arxiv_id} ({str(e)}). "
+                f"Consecutive failures: {self.consecutive_failures}"
+            )
+
             # Return minimal analysis on error
             return Analysis(
                 paper_id=paper.arxiv_id,
@@ -177,7 +208,7 @@ Important:
 
     def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute analyzer agent.
+        Execute analyzer agent with parallel processing.
 
         Args:
             state: Current agent state
@@ -195,16 +226,32 @@ Important:
                 state["errors"].append(error_msg)
                 return state
 
-            # Analyze each paper
+            # Analyze papers in parallel (max 3 concurrent to avoid rate limits)
+            max_workers = min(3, len(papers))
+            logger.info(f"Analyzing {len(papers)} papers with {max_workers} parallel workers")
+
             analyses = []
-            for paper in papers:
-                try:
-                    analysis = self.analyze_paper(paper)
-                    analyses.append(analysis)
-                except Exception as e:
-                    error_msg = f"Failed to analyze paper {paper.arxiv_id}: {str(e)}"
-                    logger.error(error_msg)
-                    state["errors"].append(error_msg)
+            failed_papers = []
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all papers for analysis
+                future_to_paper = {
+                    executor.submit(self.analyze_paper, paper): paper
+                    for paper in papers
+                }
+
+                # Collect results as they complete
+                for future in as_completed(future_to_paper):
+                    paper = future_to_paper[future]
+                    try:
+                        analysis = future.result()
+                        analyses.append(analysis)
+                        logger.info(f"Successfully analyzed paper {paper.arxiv_id}")
+                    except Exception as e:
+                        error_msg = f"Failed to analyze paper {paper.arxiv_id}: {str(e)}"
+                        logger.error(error_msg)
+                        state["errors"].append(error_msg)
+                        failed_papers.append(paper.arxiv_id)
 
             if not analyses:
                 error_msg = "Failed to analyze any papers"
@@ -212,8 +259,11 @@ Important:
                 state["errors"].append(error_msg)
                 return state
 
+            if failed_papers:
+                logger.warning(f"Failed to analyze {len(failed_papers)} papers: {failed_papers}")
+
             state["analyses"] = analyses
-            logger.info(f"=== Analyzer Agent Completed: {len(analyses)} papers analyzed ===")
+            logger.info(f"=== Analyzer Agent Completed: {len(analyses)}/{len(papers)} papers analyzed ===")
             return state
 
         except Exception as e:

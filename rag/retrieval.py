@@ -104,14 +104,13 @@ class RAGRetriever:
             content = chunk["content"]
 
             if include_metadata:
-                header = f"[Chunk {i}] Paper: {metadata.get('title', 'Unknown')}\n"
-                header += f"Authors: {metadata.get('authors', 'Unknown')}\n"
+                # Optimized: Concise headers to reduce token usage
+                header = f"[Chunk {i}] {metadata.get('title', 'Unknown')}\n"
                 if metadata.get('section'):
-                    header += f"Section: {metadata['section']}\n"
+                    header += f"Section: {metadata['section']} | "
                 if metadata.get('page_number'):
-                    header += f"Page: {metadata['page_number']}\n"
-                header += f"Source: {metadata.get('arxiv_url', 'Unknown')}\n"
-                header += "-" * 80 + "\n"
+                    header += f"Page {metadata['page_number']}"
+                header += "\n" + "=" * 40 + "\n"
                 context_parts.append(header + content)
             else:
                 context_parts.append(content)

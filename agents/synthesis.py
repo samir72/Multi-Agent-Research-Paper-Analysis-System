@@ -25,7 +25,8 @@ class SynthesisAgent:
         rag_retriever: RAGRetriever,
         #model: str = "Phi-4-multimodal-instruct",
         model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
-        temperature: float = 0.0
+        temperature: float = 0.0,
+        timeout: int = 90
     ):
         """
         Initialize Synthesis Agent.
@@ -34,17 +35,20 @@ class SynthesisAgent:
             rag_retriever: RAGRetriever instance
             model: Azure OpenAI model deployment name
             temperature: Temperature for generation (0 for deterministic)
+            timeout: Request timeout in seconds (default: 90, longer than analyzer)
         """
         self.rag_retriever = rag_retriever
         self.model = model
         self.temperature = temperature
+        self.timeout = timeout
 
-        # Initialize Azure OpenAI client
+        # Initialize Azure OpenAI client with timeout
         self.client = AzureOpenAI(
             api_key=os.getenv("AZURE_OPENAI_API_KEY"),
             #api_version="2024-02-01",
             api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+            timeout=timeout
         )
 
     def _create_synthesis_prompt(
@@ -146,7 +150,7 @@ Important:
             # Create synthesis prompt
             prompt = self._create_synthesis_prompt(papers, analyses, query)
 
-            # Call Azure OpenAI with temperature=0
+            # Call Azure OpenAI with temperature=0 and output limits
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -154,6 +158,7 @@ Important:
                     {"role": "user", "content": prompt}
                 ],
                 temperature=self.temperature,
+                max_tokens=2500,  # Larger limit for multi-paper synthesis
                 response_format={"type": "json_object"}
             )
 
