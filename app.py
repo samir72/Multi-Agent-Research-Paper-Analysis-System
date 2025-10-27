@@ -384,6 +384,7 @@ class ResearchPaperAnalyzer:
             {"".join(f'''
             <div style="background-color: #fff8e1; padding: 15px; margin-bottom: 10px; border-radius: 5px; border-left: 4px solid #ffa726;">
                 <p style="font-weight: bold;">Topic: {c.topic}</p>
+                <p><strong>Confidence:</strong> {c.confidence:.2%}</p>
                 <p><strong>Viewpoint A:</strong> {c.viewpoint_a}</p>
                 <p style="margin-left: 20px; color: #555; margin-top: 5px;"><em>Papers:</em>{self._format_paper_references(c.papers_a, papers)}</p>
                 <p style="margin-top: 10px;"><strong>Viewpoint B:</strong> {c.viewpoint_b}</p>

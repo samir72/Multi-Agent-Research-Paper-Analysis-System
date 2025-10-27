@@ -61,6 +61,7 @@ class Contradiction(BaseModel):
     viewpoint_b: str = Field(..., description="Second viewpoint")
     papers_b: List[str] = Field(..., description="Papers supporting viewpoint B")
     citations: List[str] = Field(..., description="Specific citations for both sides")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence in contradiction")
 
 
 class SynthesisResult(BaseModel):
