@@ -4,6 +4,7 @@ Main Gradio application with LangGraph agent orchestration.
 import os
 import time
 import logging
+import copy
 from typing import Dict, Any, Tuple
 from pathlib import Path
 from dotenv import load_dotenv
@@ -186,6 +187,9 @@ class ResearchPaperAnalyzer:
 
             if cached_result:
                 logger.info("Using cached result")
+                # Make a deep copy to avoid mutating the cache
+                cached_result = copy.deepcopy(cached_result)
+
                 # Convert dicts back to Pydantic models
                 from utils.schemas import Paper, Analysis, ValidatedOutput
                 cached_result["papers"] = [Paper(**p) for p in cached_result["papers"]]
