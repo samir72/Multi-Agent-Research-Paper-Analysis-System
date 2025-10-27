@@ -140,6 +140,23 @@ class ResearchPaperAnalyzer:
 
         return self.citation_agent.run(state)
 
+    def _should_continue_after_retriever(self, state: Dict[str, Any]) -> str:
+        """
+        Decide workflow path after retriever node.
+
+        Args:
+            state: Current workflow state
+
+        Returns:
+            "continue" if papers found, "end" if no papers
+        """
+        if not state.get("papers"):
+            logger.warning("No papers found, terminating workflow early")
+            if "progress" in state:
+                state["progress"](1.0, desc="No papers found")
+            return "end"
+        return "continue"
+
     def run_workflow(
         self,
         query: str,
@@ -205,9 +222,20 @@ class ResearchPaperAnalyzer:
             workflow.add_node("synthesis", self._synthesis_node)
             workflow.add_node("citation", self._citation_node)
 
-            # Define linear workflow edges
+            # Define workflow edges with conditional routing
             workflow.set_entry_point("retriever")
-            workflow.add_edge("retriever", "analyzer")
+
+            # Conditional edge after retriever: continue or end early
+            workflow.add_conditional_edges(
+                "retriever",
+                self._should_continue_after_retriever,
+                {
+                    "continue": "analyzer",
+                    "end": END
+                }
+            )
+
+            # Linear edges for successful path
             workflow.add_edge("analyzer", "synthesis")
             workflow.add_edge("synthesis", "citation")
             workflow.add_edge("citation", END)
@@ -224,10 +252,10 @@ class ResearchPaperAnalyzer:
 
             progress(1.0, desc="Complete!")
 
-            # Check if workflow completed successfully
-            if state.get("errors") and not state.get("validated_output"):
-                logger.warning("Workflow completed with errors, no validated output")
-                return self._format_error(state["errors"])
+            # Check if workflow terminated early (no papers found)
+            if not state.get("validated_output"):
+                logger.warning("Workflow terminated early, no validated output")
+                return self._format_error(state.get("errors", ["Unknown error occurred"]))
 
             # Cache the result (convert Pydantic models to dicts for JSON serialization)
             cache_data = {
@@ -369,11 +397,35 @@ class ResearchPaperAnalyzer:
         return papers_df, analysis_html, synthesis_html, citations_html, stats
 
     def _format_error(self, errors: list) -> Tuple[pd.DataFrame, str, str, str, str]:
-        """Format error message."""
+        """Format error message with user-friendly display."""
+        # Detect specific error types for better messaging
+        error_text = " ".join(errors)
+
+        if "No papers found" in error_text:
+            title = "No Papers Found"
+            icon = "🔍"
+            suggestion = """
+            <div style="background-color: #fff3e0; padding: 15px; border-radius: 5px; margin-top: 15px;">
+                <p style="margin: 0 0 10px 0;"><strong>💡 Suggestions:</strong></p>
+                <ul style="margin: 0; padding-left: 20px;">
+                    <li>Try using different keywords or search terms</li>
+                    <li>Broaden your search by removing specific filters</li>
+                    <li>Check your spelling and try synonyms</li>
+                    <li>Try a different arXiv category</li>
+                    <li>Simplify your query to more general terms</li>
+                </ul>
+            </div>
+            """
+        else:
+            title = "Error"
+            icon = "⚠️"
+            suggestion = ""
+
         error_html = f"""
-        <div style="background-color: #ffebee; padding: 20px; border-radius: 10px; border-left: 4px solid #f44336;">
-            <h3 style="color: #c62828;">Error</h3>
-            <p>{" ".join(errors)}</p>
+        <div style="background-color: #ffebee; padding: 25px; border-radius: 10px; border-left: 4px solid #f44336; margin: 20px 0;">
+            <h2 style="color: #c62828; margin-top: 0;">{icon} {title}</h2>
+            <p style="font-size: 1.1em; color: #d32f2f; margin-bottom: 10px;">{error_text}</p>
+            {suggestion}
         </div>
         """
         return pd.DataFrame(), error_html, "", "", ""
