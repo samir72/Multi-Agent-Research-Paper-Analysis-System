@@ -397,38 +397,29 @@ class ResearchPaperAnalyzer:
         return papers_df, analysis_html, synthesis_html, citations_html, stats
 
     def _format_error(self, errors: list) -> Tuple[pd.DataFrame, str, str, str, str]:
-        """Format error message with user-friendly display."""
-        # Detect specific error types for better messaging
+        """Format error message with graceful display on Papers tab."""
         error_text = " ".join(errors)
 
         if "No papers found" in error_text:
-            title = "No Papers Found"
-            icon = "🔍"
-            suggestion = """
-            <div style="background-color: #fff3e0; padding: 15px; border-radius: 5px; margin-top: 15px;">
-                <p style="margin: 0 0 10px 0;"><strong>💡 Suggestions:</strong></p>
-                <ul style="margin: 0; padding-left: 20px;">
-                    <li>Try using different keywords or search terms</li>
-                    <li>Broaden your search by removing specific filters</li>
-                    <li>Check your spelling and try synonyms</li>
-                    <li>Try a different arXiv category</li>
-                    <li>Simplify your query to more general terms</li>
-                </ul>
-            </div>
-            """
-        else:
-            title = "Error"
-            icon = "⚠️"
-            suggestion = ""
+            # Create a friendly message DataFrame for Papers tab
+            message_df = pd.DataFrame({
+                "Status": ["🔍 No Papers Found"],
+                "Message": ["We couldn't find any papers matching your search query."],
+                "Suggestions": [
+                    "Try different keywords • Broaden your search • "
+                    "Check spelling • Try another category • Simplify your query"
+                ]
+            })
 
-        error_html = f"""
-        <div style="background-color: #ffebee; padding: 25px; border-radius: 10px; border-left: 4px solid #f44336; margin: 20px 0;">
-            <h2 style="color: #c62828; margin-top: 0;">{icon} {title}</h2>
-            <p style="font-size: 1.1em; color: #d32f2f; margin-bottom: 10px;">{error_text}</p>
-            {suggestion}
-        </div>
-        """
-        return pd.DataFrame(), error_html, "", "", ""
+            # All other tabs should be empty
+            return message_df, "", "", "", ""
+        else:
+            # For other errors, show simple message in Papers tab
+            error_df = pd.DataFrame({
+                "Error": [f"⚠️ {error_text}"]
+            })
+
+            return error_df, "", "", "", ""
 
 
 # Initialize the analyzer
