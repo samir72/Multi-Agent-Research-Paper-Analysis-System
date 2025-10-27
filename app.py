@@ -224,6 +224,11 @@ class ResearchPaperAnalyzer:
 
             progress(1.0, desc="Complete!")
 
+            # Check if workflow completed successfully
+            if state.get("errors") and not state.get("validated_output"):
+                logger.warning("Workflow completed with errors, no validated output")
+                return self._format_error(state["errors"])
+
             # Cache the result (convert Pydantic models to dicts for JSON serialization)
             cache_data = {
                 "papers": [p.model_dump(mode='json') for p in state["papers"]],
