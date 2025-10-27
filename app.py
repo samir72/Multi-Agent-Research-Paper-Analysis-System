@@ -192,8 +192,8 @@ class ResearchPaperAnalyzer:
                     "output_tokens": 0,
                     "embedding_tokens": 0
                 },
-                "progress": progress,  # Pass progress tracker to nodes
-                "processing_time": None  # Will be set in citation node
+                "progress": progress  # Pass progress tracker to nodes
+                # Note: processing_time will be set after workflow completes
             }
 
             # Build LangGraph workflow
