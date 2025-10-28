@@ -480,6 +480,12 @@ For issues, questions, or feature requests, please:
 **📊 Observability:**
 - ✅ **Timestamp logging** - Added to all 10 modules for better debugging
 
+**🔧 Bug Fix (October 28, 2025):**
+- ✅ **Circuit breaker fix** - Reset counter per batch to prevent cascade failures in parallel processing
+  - Fixed issue where 2 failures in one batch caused all papers in next batch to skip
+  - Each batch now gets fresh attempt regardless of previous batch failures
+  - Maintains failure tracking within batch without cross-batch contamination
+
 ### Previous Updates (Early 2025)
 - ✅ Fixed datetime JSON serialization error (added `mode='json'` to `model_dump()`)
 - ✅ Fixed AttributeError when formatting cached results (separated cache data from output data)
