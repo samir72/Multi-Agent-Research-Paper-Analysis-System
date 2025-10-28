@@ -51,7 +51,7 @@ A production-ready multi-agent system that analyzes academic papers from arXiv, 
 - **Semantic Caching**: Optimize costs by caching similar queries
 - **Deterministic Outputs**: Temperature=0 and structured outputs for reproducibility
 - **LangGraph Orchestration**: Professional workflow with conditional routing
-- **High Performance**: 3x faster with parallel processing (2-3 min for 5 papers)
+- **High Performance**: 4x faster with parallel processing (2-3 min for 5 papers)
 - **Smart Error Handling**: Circuit breaker, graceful degradation, friendly error messages
 - **Enhanced UX**: Paper titles + confidence scores in Synthesis tab
 
@@ -66,13 +66,13 @@ User Query → Retriever Agent → Analyzer Agent → Synthesis Agent → Citati
 **LangGraph Workflow (v2.0):**
 ```
 User Query → Retriever → [Has papers?]
-                          ├─ Yes → Analyzer (parallel 3x) → Synthesis → Citation → User
+                          ├─ Yes → Analyzer (parallel 4x) → Synthesis → Citation → User
                           └─ No → END (graceful error)
 ```
 
 **Key Features:**
 - **Conditional Routing**: Intelligent branching based on results
-- **Parallel Execution**: 3 papers analyzed concurrently
+- **Parallel Execution**: 4 papers analyzed concurrently
 - **Circuit Breaker**: Auto-stops after 2 consecutive failures
 - **Early Termination**: Skips unnecessary processing
 
@@ -85,7 +85,7 @@ User Query → Retriever → [Has papers?]
    - Chunks papers into 500-token segments with 50-token overlap
 
 2. **Analyzer Agent** (Performance Optimized v2.0)
-   - **Parallel processing**: Analyzes up to 3 papers simultaneously
+   - **Parallel processing**: Analyzes up to 4 papers simultaneously
    - **Circuit breaker**: Stops after 2 consecutive failures
    - **Timeout**: 60s with max_tokens=1500 for fast responses
    - Extracts methodology, findings, conclusions, limitations, contributions
@@ -109,7 +109,7 @@ User Query → Retriever → [Has papers?]
 - **Embeddings**: Azure OpenAI text-embedding-3-small
 - **Vector Store**: ChromaDB with persistent storage
 - **Agent Framework**: LangGraph for graph-based workflow orchestration with conditional routing
-- **Parallel Processing**: ThreadPoolExecutor (3 concurrent workers) for 3x throughput
+- **Parallel Processing**: ThreadPoolExecutor (4 concurrent workers) for 4x throughput
 - **UI**: Gradio 5.49.1 with tabbed interface
 - **Data Source**: arXiv API
 - **Testing**: pytest with comprehensive test suite
@@ -305,7 +305,7 @@ Tests use:
 | **Token usage** | ~5,500/paper | ~5,200/paper | **5-10% reduction** |
 
 **Key Optimizations:**
-- ⚡ Parallel processing with ThreadPoolExecutor (3 concurrent workers)
+- ⚡ Parallel processing with ThreadPoolExecutor (4 concurrent workers)
 - ⏱️ Smart timeouts: 60s analyzer, 90s synthesis
 - 🔢 Token limits: max_tokens 1500/2500
 - 🔄 Circuit breaker: stops after 2 consecutive failures
@@ -457,7 +457,7 @@ For issues, questions, or feature requests, please:
 **🏗️ Architecture Overhaul:**
 - ✅ **LangGraph integration** - Professional workflow orchestration framework
 - ✅ **Conditional routing** - Skips downstream agents when no papers found
-- ✅ **Parallel processing** - Analyze 3 papers simultaneously (ThreadPoolExecutor)
+- ✅ **Parallel processing** - Analyze 4 papers simultaneously (ThreadPoolExecutor)
 - ✅ **Circuit breaker** - Stops after 2 consecutive failures
 
 **⚡ Performance Improvements (3x Faster):**

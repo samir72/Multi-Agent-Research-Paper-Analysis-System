@@ -226,8 +226,8 @@ Important:
                 state["errors"].append(error_msg)
                 return state
 
-            # Analyze papers in parallel (max 3 concurrent to avoid rate limits)
-            max_workers = min(3, len(papers))
+            # Analyze papers in parallel (max 4 concurrent for optimal throughput)
+            max_workers = min(4, len(papers))
             logger.info(f"Analyzing {len(papers)} papers with {max_workers} parallel workers")
 
             analyses = []
