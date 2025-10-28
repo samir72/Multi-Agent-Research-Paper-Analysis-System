@@ -226,6 +226,10 @@ Important:
                 state["errors"].append(error_msg)
                 return state
 
+            # Reset circuit breaker for new batch
+            self.consecutive_failures = 0
+            logger.info("Circuit breaker reset for new batch")
+
             # Analyze papers in parallel (max 4 concurrent for optimal throughput)
             max_workers = min(4, len(papers))
             logger.info(f"Analyzing {len(papers)} papers with {max_workers} parallel workers")
