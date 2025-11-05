@@ -2,10 +2,12 @@
 Citation Agent: Validate claims and generate proper citations.
 """
 import logging
+import time
 from typing import Dict, Any, List
 from datetime import datetime
 
 from utils.schemas import SynthesisResult, Paper, Citation, ValidatedOutput
+from utils.config import get_pricing_config
 from rag.retrieval import RAGRetriever
 
 logging.basicConfig(
@@ -159,18 +161,30 @@ class CitationAgent:
         # Validate synthesis
         validation = self.validate_synthesis(synthesis, papers)
 
-        # Estimate cost (approximate Azure OpenAI pricing)
-        # GPT-4o-mini: ~$0.15 per 1M input tokens, ~$0.60 per 1M output tokens
-        # text-embedding-3-small: ~$0.02 per 1M tokens
+        # Estimate cost using dynamic pricing configuration
+        pricing_config = get_pricing_config()
+
+        # Get model names from token_usage (set by app.py)
+        llm_model = token_usage.get("llm_model", "phi-4-multimodal-instruct")
+        embedding_model = token_usage.get("embedding_model", "text-embedding-3-small")
+
+        # Get pricing for models
+        llm_pricing = pricing_config.get_model_pricing(llm_model)
+        embedding_price = pricing_config.get_embedding_pricing(embedding_model)
+
         input_tokens = token_usage.get("input_tokens", 0)
         output_tokens = token_usage.get("output_tokens", 0)
         embedding_tokens = token_usage.get("embedding_tokens", 0)
 
         cost_estimate = (
-            (input_tokens / 1_000_000) * 0.15 +
-            (output_tokens / 1_000_000) * 0.60 +
-            (embedding_tokens / 1_000_000) * 0.02
+            (input_tokens / 1_000_000) * llm_pricing["input_price_per_1m"] +
+            (output_tokens / 1_000_000) * llm_pricing["output_price_per_1m"] +
+            (embedding_tokens / 1_000_000) * embedding_price
         )
+
+        logger.info(f"Cost calculation: {input_tokens} input @ ${llm_pricing['input_price_per_1m']}/1M, "
+                   f"{output_tokens} output @ ${llm_pricing['output_price_per_1m']}/1M, "
+                   f"{embedding_tokens} embedding @ ${embedding_price}/1M")
 
         # Create ValidatedOutput
         validated_output = ValidatedOutput(
@@ -213,15 +227,21 @@ class CitationAgent:
                 state["errors"].append(error_msg)
                 return state
 
-            # Get token usage from state or estimate
+            # Get token usage from state
             token_usage = state.get("token_usage", {
-                "input_tokens": 10000,  # Placeholder
-                "output_tokens": 2000,  # Placeholder
-                "embedding_tokens": 50000  # Placeholder
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "embedding_tokens": 0
             })
 
-            # Get processing time
-            processing_time = state.get("processing_time", 0.0)
+            # Add model names to token_usage for cost calculation
+            token_usage["llm_model"] = state.get("llm_model", "phi-4-multimodal-instruct")
+            token_usage["embedding_model"] = state.get("embedding_model", "text-embedding-3-small")
+
+            # Calculate processing time from start_time
+            start_time = state.get("start_time", time.time())
+            processing_time = time.time() - start_time
+            logger.info(f"Total processing time: {processing_time:.1f}s")
 
             # Create validated output
             validated_output = self.create_validated_output(

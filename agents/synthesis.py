@@ -131,7 +131,8 @@ Important:
         self,
         papers: List[Paper],
         analyses: List[Analysis],
-        query: str
+        query: str,
+        state: Dict[str, Any]
     ) -> SynthesisResult:
         """
         Synthesize findings across papers.
@@ -140,6 +141,7 @@ Important:
             papers: List of Paper objects
             analyses: List of Analysis objects
             query: Original research question
+            state: Agent state for token tracking
 
         Returns:
             SynthesisResult object
@@ -161,6 +163,14 @@ Important:
                 max_tokens=2500,  # Larger limit for multi-paper synthesis
                 response_format={"type": "json_object"}
             )
+
+            # Track token usage
+            if hasattr(response, 'usage') and response.usage:
+                prompt_tokens = response.usage.prompt_tokens
+                completion_tokens = response.usage.completion_tokens
+                state["token_usage"]["input_tokens"] += prompt_tokens
+                state["token_usage"]["output_tokens"] += completion_tokens
+                logger.info(f"Synthesis token usage: {prompt_tokens} input, {completion_tokens} output")
 
             # Parse response
             synthesis_data = json.loads(response.choices[0].message.content)
@@ -231,7 +241,7 @@ Important:
                 analyses = analyses[:min_len]
 
             # Perform synthesis
-            synthesis = self.synthesize(papers, analyses, query)
+            synthesis = self.synthesize(papers, analyses, query, state)
             state["synthesis"] = synthesis
 
             logger.info("=== Synthesis Agent Completed ===")

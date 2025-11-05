@@ -1,0 +1,37 @@
+{
+  "version": "1.0",
+  "last_updated": "2025-10-28",
+  "description": "Azure OpenAI model pricing configuration (per 1M tokens)",
+  "models": {
+    "phi-4-multimodal-instruct": {
+      "input_price_per_1m": 0.08,
+      "output_price_per_1m": 0.32,
+      "description": "Phi-4 Multimodal Instruct (5.6B params)",
+      "context_window": 128000
+    },
+    "gpt-4o-mini": {
+      "input_price_per_1m": 0.15,
+      "output_price_per_1m": 0.60,
+      "description": "GPT-4o Mini",
+      "context_window": 128000
+    },
+    "gpt-4o": {
+      "input_price_per_1m": 5.0,
+      "output_price_per_1m": 15.0,
+      "description": "GPT-4o",
+      "context_window": 128000
+    }
+  },
+  "embeddings": {
+    "text-embedding-3-small": {
+      "price_per_1m": 0.02,
+      "description": "Text Embedding 3 Small",
+      "dimensions": 1536
+    },
+    "text-embedding-3-large": {
+      "price_per_1m": 0.13,
+      "description": "Text Embedding 3 Large",
+      "dimensions": 3072
+    }
+  }
+}

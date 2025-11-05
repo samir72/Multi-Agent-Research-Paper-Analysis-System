@@ -4,6 +4,7 @@ Analyzer Agent: Analyze individual papers using RAG context.
 import os
 import json
 import logging
+import threading
 from typing import Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import AzureOpenAI
@@ -47,6 +48,10 @@ class AnalyzerAgent:
         # Circuit breaker for consecutive failures
         self.consecutive_failures = 0
         self.max_consecutive_failures = 2
+
+        # Thread-safe token tracking for parallel processing
+        self.token_lock = threading.Lock()
+        self.batch_tokens = {"input": 0, "output": 0}
 
         # Initialize Azure OpenAI client with timeout
         self.client = AzureOpenAI(
@@ -160,6 +165,15 @@ Important:
                 response_format={"type": "json_object"}
             )
 
+            # Track token usage (thread-safe)
+            if hasattr(response, 'usage') and response.usage:
+                with self.token_lock:
+                    self.batch_tokens["input"] += response.usage.prompt_tokens
+                    self.batch_tokens["output"] += response.usage.completion_tokens
+                    logger.info(f"Analyzer token usage for {paper.arxiv_id}: "
+                              f"{response.usage.prompt_tokens} input, "
+                              f"{response.usage.completion_tokens} output")
+
             # Parse response
             analysis_data = json.loads(response.choices[0].message.content)
 
@@ -230,6 +244,9 @@ Important:
             self.consecutive_failures = 0
             logger.info("Circuit breaker reset for new batch")
 
+            # Reset token counters for new batch
+            self.batch_tokens = {"input": 0, "output": 0}
+
             # Analyze papers in parallel (max 4 concurrent for optimal throughput)
             max_workers = min(4, len(papers))
             logger.info(f"Analyzing {len(papers)} papers with {max_workers} parallel workers")
@@ -256,6 +273,12 @@ Important:
                         logger.error(error_msg)
                         state["errors"].append(error_msg)
                         failed_papers.append(paper.arxiv_id)
+
+            # Accumulate batch tokens to state
+            state["token_usage"]["input_tokens"] += self.batch_tokens["input"]
+            state["token_usage"]["output_tokens"] += self.batch_tokens["output"]
+            logger.info(f"Total analyzer batch tokens: {self.batch_tokens['input']} input, "
+                       f"{self.batch_tokens['output']} output")
 
             if not analyses:
                 error_msg = "Failed to analyze any papers"

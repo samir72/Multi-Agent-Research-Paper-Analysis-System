@@ -213,8 +213,11 @@ class ResearchPaperAnalyzer:
                     "output_tokens": 0,
                     "embedding_tokens": 0
                 },
+                "start_time": start_time,  # For processing time calculation in CitationAgent
+                "llm_model": os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "phi-4-multimodal-instruct"),
+                "embedding_model": os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-small"),
                 "progress": progress  # Pass progress tracker to nodes
-                # Note: processing_time will be set after workflow completes
+                # Note: processing_time will be calculated in CitationAgent
             }
 
             # Build LangGraph workflow

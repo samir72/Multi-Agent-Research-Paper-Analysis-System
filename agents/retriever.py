@@ -125,6 +125,12 @@ class RetrieverAgent:
             embeddings = self.embedding_generator.generate_embeddings_batch(chunk_texts)
             logger.info(f"Generated {len(embeddings)} embeddings")
 
+            # Estimate embedding tokens (Azure doesn't return usage for embeddings)
+            # Estimate ~300 tokens per chunk on average
+            estimated_embedding_tokens = len(chunk_texts) * 300
+            state["token_usage"]["embedding_tokens"] += estimated_embedding_tokens
+            logger.info(f"Estimated embedding tokens: {estimated_embedding_tokens}")
+
             # Step 5: Store in vector database
             logger.info("Step 5: Storing in vector database...")
             self.vector_store.add_chunks(all_chunks, embeddings)
