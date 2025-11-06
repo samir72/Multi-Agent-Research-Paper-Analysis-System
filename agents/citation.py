@@ -139,6 +139,7 @@ class CitationAgent:
         synthesis: SynthesisResult,
         papers: List[Paper],
         token_usage: Dict[str, int],
+        model_desc: Dict[str, str],
         processing_time: float
     ) -> ValidatedOutput:
         """
@@ -165,8 +166,10 @@ class CitationAgent:
         pricing_config = get_pricing_config()
 
         # Get model names from token_usage (set by app.py)
-        llm_model = token_usage.get("llm_model", "phi-4-multimodal-instruct")
-        embedding_model = token_usage.get("embedding_model", "text-embedding-3-small")
+        #llm_model = token_usage.get("llm_model", "phi-4-multimodal-instruct")
+        #embedding_model = token_usage.get("embedding_model", "text-embedding-3-small")
+        llm_model = model_desc.get("llm_model", "phi-4-multimodal-instruct")
+        embedding_model = model_desc.get("embedding_model", "text-embedding-3-small")
 
         # Get pricing for models
         llm_pricing = pricing_config.get_model_pricing(llm_model)
@@ -234,9 +237,12 @@ class CitationAgent:
                 "embedding_tokens": 0
             })
 
+            # Retrieve model descriptions from state
+            model_desc = state.get("model_desc", {})
+
             # Add model names to token_usage for cost calculation
-            token_usage["llm_model"] = state.get("llm_model", "phi-4-multimodal-instruct")
-            token_usage["embedding_model"] = state.get("embedding_model", "text-embedding-3-small")
+            #token_usage["llm_model"] = state.get("llm_model", "phi-4-multimodal-instruct")
+            #token_usage["embedding_model"] = state.get("embedding_model", "text-embedding-3-small")
 
             # Calculate processing time from start_time
             start_time = state.get("start_time", time.time())
@@ -248,6 +254,7 @@ class CitationAgent:
                 synthesis=synthesis,
                 papers=papers,
                 token_usage=token_usage,
+                model_desc=model_desc,
                 processing_time=processing_time
             )
 

@@ -107,6 +107,51 @@ class ResearchPaperAnalyzer:
 
         return self.analyzer_agent.run(state)
 
+    def _filter_low_confidence_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        LangGraph node to filter out analyses with 0% confidence.
+
+        Papers with failed analysis (0% confidence) are excluded from
+        synthesis and citation but remain visible in the Papers tab.
+
+        Args:
+            state: Current workflow state
+
+        Returns:
+            Updated state with filtered analyses and papers
+        """
+        analyses = state.get("analyses", [])
+        papers = state.get("papers", [])
+
+        if not analyses:
+            return state
+
+        # Separate valid and failed analyses
+        valid_pairs = [(p, a) for p, a in zip(papers, analyses) if a.confidence_score > 0.0]
+        failed_pairs = [(p, a) for p, a in zip(papers, analyses) if a.confidence_score == 0.0]
+
+        if failed_pairs:
+            failed_count = len(failed_pairs)
+            failed_titles = [p.title[:50] + "..." if len(p.title) > 50 else p.title for p, _ in failed_pairs]
+            logger.warning(f"Filtering out {failed_count} paper(s) with 0% confidence: {failed_titles}")
+            state["errors"].append(
+                f"Excluded {failed_count} paper(s) with failed analysis from synthesis and citations"
+            )
+
+        # Update state with filtered data (but keep original papers list for Papers tab)
+        if valid_pairs:
+            # Store filtered papers and analyses for synthesis/citation
+            state["filtered_papers"] = [p for p, _ in valid_pairs]
+            state["filtered_analyses"] = [a for _, a in valid_pairs]
+        else:
+            # All analyses failed
+            state["filtered_papers"] = []
+            state["filtered_analyses"] = []
+            logger.error("All paper analyses failed (0% confidence)")
+            state["errors"].append("All paper analyses failed - cannot generate synthesis")
+
+        return state
+
     def _synthesis_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
         LangGraph node for synthesis agent.
@@ -120,11 +165,20 @@ class ResearchPaperAnalyzer:
         if "progress" in state:
             state["progress"](0.7, desc="Synthesizing findings across papers...")
 
-        # Skip if no analyses available
-        if state.get("errors") and not state.get("analyses"):
+        # Skip if no analyses available after filtering
+        if state.get("errors") and not state.get("filtered_analyses"):
             return state
 
-        return self.synthesis_agent.run(state)
+        # Use filtered data for synthesis
+        synthesis_state = state.copy()
+        synthesis_state["papers"] = state.get("filtered_papers", state.get("papers", []))
+        synthesis_state["analyses"] = state.get("filtered_analyses", state.get("analyses", []))
+
+        result = self.synthesis_agent.run(synthesis_state)
+        state["synthesis"] = result.get("synthesis")
+        state["token_usage"] = result.get("token_usage", state.get("token_usage", {}))
+
+        return state
 
     def _citation_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -139,7 +193,16 @@ class ResearchPaperAnalyzer:
         if "progress" in state:
             state["progress"](0.9, desc="Validating and generating citations...")
 
-        return self.citation_agent.run(state)
+        # Use filtered data for citations (same as synthesis)
+        citation_state = state.copy()
+        citation_state["papers"] = state.get("filtered_papers", state.get("papers", []))
+        citation_state["analyses"] = state.get("filtered_analyses", state.get("analyses", []))
+
+        result = self.citation_agent.run(citation_state)
+        state["validated_output"] = result.get("validated_output")
+        state["token_usage"] = result.get("token_usage", state.get("token_usage", {}))
+
+        return state
 
     def _should_continue_after_retriever(self, state: Dict[str, Any]) -> str:
         """
@@ -158,15 +221,145 @@ class ResearchPaperAnalyzer:
             return "end"
         return "continue"
 
+    def _create_empty_outputs(self) -> Tuple[pd.DataFrame, str, str, str, str]:
+        """Create empty outputs for initial state."""
+        empty_df = pd.DataFrame({"Status": ["⏳ Initializing..."]})
+        empty_html = "<p>Processing...</p>"
+        return empty_df, empty_html, empty_html, empty_html, empty_html
+
+    def _format_papers_partial(
+        self,
+        papers: list,
+        analyses: list,
+        completed_count: int
+    ) -> pd.DataFrame:
+        """Format papers table with partial analysis results."""
+        papers_data = []
+        for i, paper in enumerate(papers):
+            if i < completed_count and i < len(analyses):
+                # Analysis completed
+                analysis = analyses[i]
+                if analysis.confidence_score == 0.0:
+                    status = "⚠️ Failed"
+                else:
+                    status = "✅ Complete"
+                confidence = f"{analysis.confidence_score:.1%}"
+            elif i < completed_count:
+                # Analysis in progress (submitted but not yet in analyses list)
+                status = "⏳ Analyzing"
+                confidence = "-"
+            else:
+                # Not started
+                status = "⏸️ Pending"
+                confidence = "-"
+
+            papers_data.append({
+                "Title": paper.title,
+                "Authors": ", ".join(paper.authors[:3]) + ("..." if len(paper.authors) > 3 else ""),
+                "Date": paper.published.strftime("%Y-%m-%d"),
+                "arXiv ID": paper.arxiv_id,
+                "Status": status,
+                "Confidence": confidence,
+                "Link": f"[View PDF]({paper.pdf_url})"
+            })
+        return pd.DataFrame(papers_data)
+
+    def _format_analysis_partial(self, papers: list, analyses: list) -> str:
+        """Format analysis HTML with partial results."""
+        if not analyses:
+            return "<h2>Paper Analyses</h2><p>Analyzing papers...</p>"
+
+        analysis_html = "<h2>Paper Analyses</h2>"
+        analysis_html += f"<p><em>Analyzed {len(analyses)}/{len(papers)} papers</em></p>"
+
+        for paper, analysis in zip(papers[:len(analyses)], analyses):
+            # Skip failed analyses
+            if analysis.confidence_score == 0.0:
+                continue
+
+            analysis_html += f"""
+            <details style="margin-bottom: 20px; border: 1px solid #ddd; padding: 10px; border-radius: 5px;">
+                <summary style="cursor: pointer; font-weight: bold; font-size: 1.1em;">
+                    {paper.title}
+                </summary>
+                <div style="margin-top: 10px;">
+                    <p><strong>Confidence:</strong> {analysis.confidence_score:.2%}</p>
+                    <h4>Methodology</h4>
+                    <p>{analysis.methodology}</p>
+                    <h4>Key Findings</h4>
+                    <ul>
+                        {"".join(f"<li>{f}</li>" for f in analysis.key_findings)}
+                    </ul>
+                    <h4>Main Contributions</h4>
+                    <ul>
+                        {"".join(f"<li>{c}</li>" for c in analysis.main_contributions)}
+                    </ul>
+                    <h4>Conclusions</h4>
+                    <p>{analysis.conclusions}</p>
+                    <h4>Limitations</h4>
+                    <ul>
+                        {"".join(f"<li>{l}</li>" for l in analysis.limitations)}
+                    </ul>
+                </div>
+            </details>
+            """
+        return analysis_html
+
+    def _format_synthesis_output(self, papers: list, validated_output) -> str:
+        """Format synthesis section HTML."""
+        synthesis = validated_output.synthesis
+        synthesis_html = f"""
+        <div style="background-color: #f0f8ff; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+            <h2>Executive Summary</h2>
+            <p><strong>Confidence Score:</strong> {synthesis.confidence_score:.2%}</p>
+            <p style="font-size: 1.1em; line-height: 1.6;">{synthesis.summary}</p>
+        </div>
+
+        <div style="margin-bottom: 30px;">
+            <h3 style="color: #2e7d32;">Consensus Findings</h3>
+            {"".join(f'''
+            <div style="background-color: #e8f5e9; padding: 15px; margin-bottom: 10px; border-radius: 5px; border-left: 4px solid #4caf50;">
+                <p style="font-weight: bold;">{cp.statement}</p>
+                <p><strong>Supporting Papers:</strong>{self._format_paper_references(cp.supporting_papers, papers)}</p>
+                <p><strong>Confidence:</strong> {cp.confidence:.2%}</p>
+            </div>
+            ''' for cp in synthesis.consensus_points)}
+        </div>
+
+        <div style="margin-bottom: 30px;">
+            <h3 style="color: #f57c00;">Contradictions</h3>
+            {"".join(f'''
+            <div style="background-color: #fff8e1; padding: 15px; margin-bottom: 10px; border-radius: 5px; border-left: 4px solid #ffa726;">
+                <p style="font-weight: bold;">Topic: {c.topic}</p>
+                <p><strong>Confidence:</strong> {c.confidence:.2%}</p>
+                <p><strong>Viewpoint A:</strong> {c.viewpoint_a}</p>
+                <p style="margin-left: 20px; color: #555; margin-top: 5px;"><em>Papers:</em>{self._format_paper_references(c.papers_a, papers)}</p>
+                <p style="margin-top: 10px;"><strong>Viewpoint B:</strong> {c.viewpoint_b}</p>
+                <p style="margin-left: 20px; color: #555; margin-top: 5px;"><em>Papers:</em>{self._format_paper_references(c.papers_b, papers)}</p>
+            </div>
+            ''' for c in synthesis.contradictions)}
+        </div>
+
+        <div>
+            <h3 style="color: #1976d2;">Research Gaps</h3>
+            <ul>
+                {"".join(f"<li style='margin-bottom: 8px;'>{gap}</li>" for gap in synthesis.research_gaps)}
+            </ul>
+        </div>
+        """
+        return synthesis_html
+
     def run_workflow(
         self,
         query: str,
         category: str,
         num_papers: int,
         progress=gr.Progress()
-    ) -> Tuple[pd.DataFrame, str, str, str, str]:
+    ):
         """
-        Execute the complete research paper analysis workflow.
+        Execute the complete research paper analysis workflow with streaming updates.
+
+        This is a generator function that yields progressive UI updates as the workflow executes.
 
         Args:
             query: Research question
@@ -174,11 +367,17 @@ class ResearchPaperAnalyzer:
             num_papers: Number of papers to analyze
             progress: Gradio progress tracker
 
-        Returns:
+        Yields:
             Tuple of (papers_df, analysis_html, synthesis_html, citations_html, stats)
+            after each significant workflow update
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         try:
             start_time = time.time()
+
+            # Yield initial empty state
+            yield self._create_empty_outputs()
 
             # Check cache first
             progress(0.0, desc="Checking cache...")
@@ -195,10 +394,11 @@ class ResearchPaperAnalyzer:
                 cached_result["papers"] = [Paper(**p) for p in cached_result["papers"]]
                 cached_result["analyses"] = [Analysis(**a) for a in cached_result["analyses"]]
                 cached_result["validated_output"] = ValidatedOutput(**cached_result["validated_output"])
-                return self._format_output(cached_result)
+                yield self._format_output(cached_result)
+                return
 
-            # Initialize state for LangGraph workflow
-            initial_state = {
+            # Initialize state for workflow
+            state = {
                 "query": query,
                 "category": category if category != "All" else None,
                 "num_papers": num_papers,
@@ -213,58 +413,156 @@ class ResearchPaperAnalyzer:
                     "output_tokens": 0,
                     "embedding_tokens": 0
                 },
-                "start_time": start_time,  # For processing time calculation in CitationAgent
-                "llm_model": os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "phi-4-multimodal-instruct"),
-                "embedding_model": os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-small"),
-                "progress": progress  # Pass progress tracker to nodes
-                # Note: processing_time will be calculated in CitationAgent
+                "start_time": start_time,
+                "model_desc": {
+                    "llm_model": os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "phi-4-multimodal-instruct"),
+                    "embedding_model": os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME", "text-embedding-3-small")
+                },
+                "progress": progress
             }
 
-            # Build LangGraph workflow
-            workflow = StateGraph(dict)
+            # ==== STEP 1: Retriever Agent ====
+            progress(0.1, desc="Searching and downloading papers...")
+            logger.info("=== Running Retriever Agent ===")
+            state = self.retriever_agent.run(state)
 
-            # Add nodes for each agent
-            workflow.add_node("retriever", self._retriever_node)
-            workflow.add_node("analyzer", self._analyzer_node)
-            workflow.add_node("synthesis", self._synthesis_node)
-            workflow.add_node("citation", self._citation_node)
+            if not state.get("papers"):
+                logger.warning("No papers found, terminating workflow")
+                progress(1.0, desc="No papers found")
+                yield self._format_error(state.get("errors", ["No papers found"]))
+                return
 
-            # Define workflow edges with conditional routing
-            workflow.set_entry_point("retriever")
+            papers = state["papers"]
+            logger.info(f"Retrieved {len(papers)} papers")
 
-            # Conditional edge after retriever: continue or end early
-            workflow.add_conditional_edges(
-                "retriever",
-                self._should_continue_after_retriever,
-                {
-                    "continue": "analyzer",
-                    "end": END
+            # Yield papers table with "Pending" status
+            papers_df = self._format_papers_partial(papers, [], 0)
+            empty_html = "<p>Waiting for analysis...</p>"
+            yield (papers_df, empty_html, empty_html, empty_html, empty_html)
+
+            # ==== STEP 2: Analyzer Agent (with streaming per paper) ====
+            progress(0.4, desc="Analyzing papers...")
+            logger.info("=== Running Analyzer Agent (Streaming) ===")
+
+            # Reset token counters and circuit breaker for new batch
+            self.analyzer_agent.batch_tokens = {"input": 0, "output": 0}
+            self.analyzer_agent.consecutive_failures = 0
+
+            analyses = []
+            analyses_by_arxiv_id = {}  # Map arxiv_id to analysis for ordering
+            completed_count = 0
+
+            # Parallel analysis with streaming updates
+            max_workers = min(4, len(papers))
+            logger.info(f"Analyzing {len(papers)} papers with {max_workers} parallel workers")
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all papers for analysis
+                future_to_paper = {
+                    executor.submit(self.analyzer_agent.analyze_paper, paper): paper
+                    for paper in papers
                 }
+
+                # Collect results as they complete and yield updates
+                for future in as_completed(future_to_paper):
+                    paper = future_to_paper[future]
+                    try:
+                        analysis = future.result()
+                        analyses_by_arxiv_id[paper.arxiv_id] = analysis
+                        completed_count += 1
+                        logger.info(f"Completed analysis {completed_count}/{len(papers)}: {paper.arxiv_id}")
+
+                        # Reconstruct analyses list in original paper order
+                        ordered_analyses = [
+                            analyses_by_arxiv_id[p.arxiv_id]
+                            for p in papers
+                            if p.arxiv_id in analyses_by_arxiv_id
+                        ]
+
+                        # Yield progressive update
+                        papers_df = self._format_papers_partial(papers, ordered_analyses, completed_count)
+                        analysis_html = self._format_analysis_partial(papers, ordered_analyses)
+                        yield (papers_df, analysis_html, empty_html, empty_html, empty_html)
+
+                    except Exception as e:
+                        error_msg = f"Failed to analyze paper {paper.arxiv_id}: {str(e)}"
+                        logger.error(error_msg)
+                        state["errors"].append(error_msg)
+                        # Create failed analysis placeholder
+                        from utils.schemas import Analysis
+                        analyses_by_arxiv_id[paper.arxiv_id] = Analysis(
+                            paper_id=paper.arxiv_id,
+                            methodology="Analysis failed",
+                            key_findings=[],
+                            conclusions="",
+                            limitations=[],
+                            main_contributions=[],
+                            confidence_score=0.0
+                        )
+                        completed_count += 1
+
+            # Reconstruct final ordered analyses
+            analyses = [analyses_by_arxiv_id[p.arxiv_id] for p in papers]
+            state["analyses"] = analyses
+
+            # Accumulate batch tokens to state
+            state["token_usage"]["input_tokens"] += self.analyzer_agent.batch_tokens["input"]
+            state["token_usage"]["output_tokens"] += self.analyzer_agent.batch_tokens["output"]
+            logger.info(f"Total analyzer batch tokens: {self.analyzer_agent.batch_tokens['input']} input, "
+                       f"{self.analyzer_agent.batch_tokens['output']} output")
+
+            logger.info(f"=== Analyzer Agent Completed: {len(analyses)} analyses ===")
+
+            # ==== STEP 3: Filter Low Confidence ====
+            logger.info("=== Running Filter Node ===")
+            state = self._filter_low_confidence_node(state)
+
+            if not state.get("filtered_analyses"):
+                logger.error("All analyses failed")
+                error_msg = "All paper analyses failed - cannot generate synthesis"
+                yield self._format_error([error_msg])
+                return
+
+            # ==== STEP 4: Synthesis Agent ====
+            progress(0.7, desc="Synthesizing findings across papers...")
+            logger.info("=== Running Synthesis Agent ===")
+            state = self._synthesis_node(state)
+
+            # Yield with synthesis results
+            papers_df = self._format_papers_partial(papers, analyses, len(papers))
+            analysis_html = self._format_analysis_partial(papers, analyses)
+
+            # Create temporary validated_output for formatting synthesis
+            from utils.schemas import ValidatedOutput
+            temp_validated = ValidatedOutput(
+                query=query,
+                synthesis=state["synthesis"],
+                citations=[],
+                retrieved_chunks=[],
+                processing_time=0,
+                cost_estimate=0,
+                token_usage=state["token_usage"]
             )
+            synthesis_html = self._format_synthesis_output(papers, temp_validated)
+            yield (papers_df, analysis_html, synthesis_html, empty_html, empty_html)
 
-            # Linear edges for successful path
-            workflow.add_edge("analyzer", "synthesis")
-            workflow.add_edge("synthesis", "citation")
-            workflow.add_edge("citation", END)
-
-            # Compile the workflow
-            app = workflow.compile()
-
-            # Execute the workflow using LangGraph
-            logger.info("Executing LangGraph workflow...")
-            state = app.invoke(initial_state)
+            # ==== STEP 5: Citation Agent ====
+            progress(0.9, desc="Validating and generating citations...")
+            logger.info("=== Running Citation Agent ===")
+            state = self._citation_node(state)
 
             # Calculate processing time
             state["processing_time"] = time.time() - start_time
 
             progress(1.0, desc="Complete!")
 
-            # Check if workflow terminated early (no papers found)
+            # Check for validated output
             if not state.get("validated_output"):
-                logger.warning("Workflow terminated early, no validated output")
-                return self._format_error(state.get("errors", ["Unknown error occurred"]))
+                logger.warning("Workflow completed but no validated output")
+                yield self._format_error(state.get("errors", ["Unknown error occurred"]))
+                return
 
-            # Cache the result (convert Pydantic models to dicts for JSON serialization)
+            # Cache the result
             cache_data = {
                 "papers": [p.model_dump(mode='json') for p in state["papers"]],
                 "analyses": [a.model_dump(mode='json') for a in state["analyses"]],
@@ -272,17 +570,17 @@ class ResearchPaperAnalyzer:
             }
             self.cache.set(query, query_embedding, cache_data, category)
 
-            # Format output using state which has Pydantic models
+            # Format final output
             result = {
                 "papers": state["papers"],
                 "analyses": state["analyses"],
                 "validated_output": state["validated_output"]
             }
-            return self._format_output(result)
+            yield self._format_output(result)
 
         except Exception as e:
             logger.error(f"Workflow error: {str(e)}")
-            return self._format_error([str(e)])
+            yield self._format_error([str(e)])
 
     def _format_paper_references(self, paper_ids: list, papers: list) -> str:
         """
@@ -322,19 +620,42 @@ class ResearchPaperAnalyzer:
 
         # Format papers table
         papers_data = []
-        for paper in papers:
+        for paper, analysis in zip(papers, analyses):
+            # Determine status based on confidence
+            if analysis.confidence_score == 0.0:
+                status = "⚠️ Failed"
+            else:
+                status = "✅ Complete"
+
             papers_data.append({
                 "Title": paper.title,
                 "Authors": ", ".join(paper.authors[:3]) + ("..." if len(paper.authors) > 3 else ""),
                 "Date": paper.published.strftime("%Y-%m-%d"),
                 "arXiv ID": paper.arxiv_id,
-                "Link": paper.pdf_url
+                "Status": status,
+                "Confidence": f"{analysis.confidence_score:.1%}",
+                "Link": f"[View PDF]({paper.pdf_url})"  # Markdown link format
             })
         papers_df = pd.DataFrame(papers_data)
 
-        # Format analysis
+        # Format analysis - only show successful analyses (confidence > 0%)
         analysis_html = "<h2>Paper Analyses</h2>"
+        successful_count = sum(1 for a in analyses if a.confidence_score > 0.0)
+        failed_count = len(analyses) - successful_count
+
+        if failed_count > 0:
+            analysis_html += f"""
+            <div style="background-color: #fff3cd; padding: 10px; margin-bottom: 20px; border-radius: 5px; border-left: 4px solid #ffc107;">
+                <p><strong>Note:</strong> {failed_count} paper(s) failed analysis and are excluded from this view.
+                Check the Papers tab for complete status information.</p>
+            </div>
+            """
+
         for paper, analysis in zip(papers, analyses):
+            # Only show successful analyses
+            if analysis.confidence_score == 0.0:
+                continue
+
             analysis_html += f"""
             <details style="margin-bottom: 20px; border: 1px solid #ddd; padding: 10px; border-radius: 5px;">
                 <summary style="cursor: pointer; font-weight: bold; font-size: 1.1em;">
@@ -418,7 +739,7 @@ class ResearchPaperAnalyzer:
         stats = f"""
         <h3>Processing Statistics</h3>
         <ul>
-            <li>Papers Analyzed: {len(papers)}</li>
+            <li>Papers Analyzed: {len(validated_output.synthesis.papers_analyzed)}</li>
             <li>Processing Time: {validated_output.processing_time:.1f} seconds</li>
             <li>Estimated Cost: ${validated_output.cost_estimate:.4f}</li>
             <li>Chunks Used: {len(validated_output.retrieved_chunks)}</li>
@@ -479,7 +800,7 @@ def analyze_research(query, category, num_papers, progress=gr.Progress()):
     """Gradio interface function."""
     # Extract category code
     cat_code = category.split(" - ")[0] if category != "All" else "All"
-    return analyzer.run_workflow(query, cat_code, num_papers, progress)
+    yield from analyzer.run_workflow(query, cat_code, num_papers, progress)
 
 
 # Create Gradio interface
@@ -518,7 +839,9 @@ with gr.Blocks(title="Research Paper Analyzer", theme=gr.themes.Soft()) as demo:
         with gr.Tab("Papers"):
             papers_output = gr.Dataframe(
                 label="Retrieved Papers",
-                wrap=True
+                wrap=True,
+                datatype=["str", "str", "str", "str", "str", "str", "markdown"],  # Last column is markdown for clickable links
+                column_widths=["25%", "20%", "8%", "10%", "8%", "10%", "19%"]
             )
 
         with gr.Tab("Analysis"):

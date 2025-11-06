@@ -23,7 +23,7 @@ class SynthesisAgent:
     def __init__(
         self,
         rag_retriever: RAGRetriever,
-        #model: str = "Phi-4-multimodal-instruct",
+        #model: str = "phi-4-multimodal-instruct",
         model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
         temperature: float = 0.0,
         timeout: int = 90

@@ -53,7 +53,9 @@ A production-ready multi-agent system that analyzes academic papers from arXiv, 
 - **LangGraph Orchestration**: Professional workflow with conditional routing
 - **High Performance**: 4x faster with parallel processing (2-3 min for 5 papers)
 - **Smart Error Handling**: Circuit breaker, graceful degradation, friendly error messages
-- **Enhanced UX**: Paper titles + confidence scores in Synthesis tab
+- **Progressive UI**: Real-time updates as papers are analyzed with streaming results
+- **Smart Quality Filtering**: Automatically excludes failed analyses (0% confidence) from synthesis
+- **Enhanced UX**: Clickable PDF links, paper titles + confidence scores, status indicators
 
 ## Architecture
 
@@ -63,18 +65,19 @@ A production-ready multi-agent system that analyzes academic papers from arXiv, 
 User Query → Retriever Agent → Analyzer Agent → Synthesis Agent → Citation Agent → User
 ```
 
-**LangGraph Workflow (v2.0):**
+**Streaming Workflow (v2.1):**
 ```
 User Query → Retriever → [Has papers?]
-                          ├─ Yes → Analyzer (parallel 4x) → Synthesis → Citation → User
-                          └─ No → END (graceful error)
+              ├─ Yes → Analyzer (parallel 4x, streaming) → Filter (0% confidence) → Synthesis → Citation → User
+              └─ No → END (graceful error)
 ```
 
 **Key Features:**
-- **Conditional Routing**: Intelligent branching based on results
-- **Parallel Execution**: 4 papers analyzed concurrently
+- **Progressive Streaming**: Real-time UI updates using Python generators
+- **Parallel Execution**: 4 papers analyzed concurrently with live status
+- **Smart Filtering**: Removes failed analyses (0% confidence) before synthesis
 - **Circuit Breaker**: Auto-stops after 2 consecutive failures
-- **Early Termination**: Skips unnecessary processing
+- **Status Tracking**: ⏸️ Pending → ⏳ Analyzing → ✅ Complete / ⚠️ Failed
 
 ### 4 Specialized Agents
 
@@ -108,12 +111,13 @@ User Query → Retriever → [Has papers?]
 - **LLM**: Azure OpenAI (gpt-4o-mini or Phi-4-multimodal-instruct) with temperature=0
 - **Embeddings**: Azure OpenAI text-embedding-3-small
 - **Vector Store**: ChromaDB with persistent storage
-- **Agent Framework**: LangGraph for graph-based workflow orchestration with conditional routing
-- **Parallel Processing**: ThreadPoolExecutor (4 concurrent workers) for 4x throughput
-- **UI**: Gradio 5.49.1 with tabbed interface
+- **Agent Framework**: Generator-based streaming workflow with progressive UI updates
+- **Parallel Processing**: ThreadPoolExecutor (4 concurrent workers) with as_completed for streaming
+- **UI**: Gradio 5.49.1 with tabbed interface and real-time updates
 - **Data Source**: arXiv API
 - **Testing**: pytest with comprehensive test suite
 - **Type Safety**: Pydantic V2 schemas for validation
+- **Pricing**: Configurable pricing system (JSON + environment overrides)
 
 ## Installation
 
@@ -144,11 +148,16 @@ cp .env.example .env
 Required environment variables:
 - `AZURE_OPENAI_ENDPOINT`: Your Azure OpenAI endpoint (e.g., https://your-resource.openai.azure.com/)
 - `AZURE_OPENAI_API_KEY`: Your Azure OpenAI API key
-- `AZURE_OPENAI_DEPLOYMENT_NAME`: Your deployment name (e.g., gpt-4o-mini)
+- `AZURE_OPENAI_DEPLOYMENT_NAME`: Your deployment name (e.g., gpt-4o-mini or phi-4-multimodal-instruct)
 - `AZURE_OPENAI_API_VERSION`: API version (optional, defaults in code)
 
 Optional:
 - `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`: Custom embedding model deployment name
+- `PRICING_INPUT_PER_1M`: Override input token pricing for all models (per 1M tokens)
+- `PRICING_OUTPUT_PER_1M`: Override output token pricing for all models (per 1M tokens)
+- `PRICING_EMBEDDING_PER_1M`: Override embedding token pricing (per 1M tokens)
+
+**Note**: Pricing is configured in `config/pricing.json` with support for phi-4-multimodal-instruct, gpt-4o-mini, and gpt-4o. Environment variables override JSON settings.
 
 4. Run the application:
 ```bash
@@ -162,19 +171,19 @@ The application will be available at `http://localhost:7860`
 1. **Enter Research Question**: Type your research question in the text box
 2. **Select Category**: Choose an arXiv category or leave as "All"
 3. **Set Number of Papers**: Use the slider to select 1-20 papers
-4. **Click Analyze**: The system will process your request
-5. **View Results**: Explore the four output tabs:
-   - **Papers**: Table of retrieved papers with links
-   - **Analysis**: Detailed analysis of each paper
-   - **Synthesis**: Executive summary with consensus and contradictions
-   - **Citations**: APA-formatted references
-   - **Stats**: Processing statistics and cost estimates
+4. **Click Analyze**: The system will process your request with real-time updates
+5. **View Results**: Explore the five output tabs with progressive updates:
+   - **Papers**: Table of retrieved papers with clickable PDF links and live status (⏸️ Pending → ⏳ Analyzing → ✅ Complete / ⚠️ Failed)
+   - **Analysis**: Detailed analysis of each paper (updates as each completes)
+   - **Synthesis**: Executive summary with consensus and contradictions (populated after all analyses)
+   - **Citations**: APA-formatted references with validation
+   - **Stats**: Processing statistics, token usage, and cost estimates
 
 ## Project Structure
 
 ```
 Multi-Agent-Research-Paper-Analysis-System/
-├── app.py                          # Main Gradio application
+├── app.py                          # Main Gradio application with streaming workflow
 ├── requirements.txt                # Python dependencies
 ├── README.md                       # This file - full documentation
 ├── QUICKSTART.md                   # Quick setup guide (5 minutes)
@@ -183,7 +192,7 @@ Multi-Agent-Research-Paper-Analysis-System/
 ├── agents/
 │   ├── __init__.py
 │   ├── retriever.py               # Paper retrieval & chunking
-│   ├── analyzer.py                # Individual paper analysis
+│   ├── analyzer.py                # Individual paper analysis (parallel + streaming)
 │   ├── synthesis.py               # Cross-paper synthesis
 │   └── citation.py                # Citation validation & formatting
 ├── rag/
@@ -196,7 +205,10 @@ Multi-Agent-Research-Paper-Analysis-System/
 │   ├── arxiv_client.py            # arXiv API wrapper
 │   ├── pdf_processor.py           # PDF parsing & chunking
 │   ├── cache.py                   # Semantic caching layer
+│   ├── config.py                  # Pricing configuration management (NEW)
 │   └── schemas.py                 # Pydantic data models
+├── config/
+│   └── pricing.json               # Model pricing configuration (NEW)
 ├── tests/
 │   ├── __init__.py
 │   └── test_analyzer.py           # Unit tests for analyzer agent
@@ -206,6 +218,19 @@ Multi-Agent-Research-Paper-Analysis-System/
 ```
 
 ## Key Features
+
+### Progressive Streaming UI
+
+The system provides real-time feedback during analysis with a generator-based streaming workflow:
+
+1. **Papers Tab Updates**: Status changes live as papers are processed
+   - ⏸️ **Pending**: Paper queued for analysis
+   - ⏳ **Analyzing**: Analysis in progress
+   - ✅ **Complete**: Analysis successful with confidence score
+   - ⚠️ **Failed**: Analysis failed (0% confidence, excluded from synthesis)
+2. **Incremental Results**: Analysis tab populates as each paper completes
+3. **ThreadPoolExecutor**: Up to 4 papers analyzed concurrently with `as_completed()` for streaming
+4. **Python Generators**: Uses `yield` to stream results without blocking
 
 ### Deterministic Output Strategy
 
@@ -217,23 +242,31 @@ The system implements multiple techniques to minimize hallucinations:
 4. **Source Validation**: Cross-reference all claims with original text
 5. **Semantic Caching**: Hash query embeddings, return cached results for cosine similarity >0.95
 6. **Confidence Scores**: Return uncertainty metrics with each response
+7. **Smart Filtering**: Papers with 0% confidence automatically excluded from synthesis
 
 ### Cost Optimization
 
-- Request batching for embeddings
-- Cached embeddings in ChromaDB (don't re-embed same papers)
-- Token usage logging per request
-- Semantic caching for repeated queries with Pydantic V2 model serialization (`mode='json'`)
-- JSON-compatible cache storage with automatic datetime conversion
-- Target: <$0.50 per analysis session
+- **Configurable Pricing System**: `config/pricing.json` for easy model switching
+  - Supports phi-4-multimodal-instruct ($0.08/$0.32 per 1M tokens)
+  - Supports gpt-4o-mini ($0.15/$0.60 per 1M tokens)
+  - Environment variable overrides for testing and custom pricing
+- **Thread-safe Token Tracking**: Accurate counts across parallel processing
+- **Request Batching**: Batch embeddings for efficiency
+- **Cached Embeddings**: ChromaDB stores embeddings (don't re-embed same papers)
+- **Semantic Caching**: Return cached results for similar queries (cosine similarity >0.95)
+- **Token Usage Logging**: Track input/output/embedding tokens per request
+- **Target**: <$0.50 per analysis session (5 papers with phi-4)
 
 ### Error Handling
 
-- Graceful fallback if arXiv API is down
-- Handle PDF parsing failures (some papers may be scanned images)
-- Timeout protection for long-running analyses
-- User-friendly error messages in Gradio UI
-- Comprehensive error logging for debugging
+- **Smart Quality Control**: Automatically filters out 0% confidence analyses from synthesis
+- **Visual Status Indicators**: Papers tab shows ⚠️ Failed for problematic papers
+- **Graceful Degradation**: Failed papers don't block overall workflow
+- **Circuit Breaker**: Stops after 2 consecutive failures in parallel processing
+- **Timeout Protection**: 60s analyzer, 90s synthesis timeouts
+- **Graceful Fallbacks**: Handle arXiv API downtime and PDF parsing failures
+- **User-friendly Messages**: Clear error descriptions in Gradio UI
+- **Comprehensive Logging**: Detailed error tracking for debugging
 
 ## Testing
 
@@ -452,7 +485,61 @@ For issues, questions, or feature requests, please:
 
 ## Changelog
 
-### Version 2.0 - October 2025 (Latest)
+### Version 2.1 - November 2025 (Latest)
+
+**🎨 Enhanced User Experience:**
+- ✅ **Progressive Papers Tab** - Real-time updates as papers are analyzed
+  - Papers table "paints" progressively showing status: ⏸️ Pending → ⏳ Analyzing → ✅ Complete / ⚠️ Failed
+  - Analysis HTML updates incrementally as each paper completes
+  - Synthesis and Citations populate after all analyses finish
+  - Smooth streaming experience using Python generators (`yield`)
+- ✅ **Clickable PDF Links** - Papers tab links now HTML-enabled
+  - Link column renders as markdown for clickable "View PDF" links
+  - Direct access to arXiv PDFs from results table
+- ✅ **Smart Confidence Filtering** - Improved result quality
+  - Papers with 0% confidence (failed analyses) excluded from synthesis and citations
+  - Failed papers remain visible in Papers tab with ⚠️ Failed status
+  - Prevents low-quality analyses from contaminating final output
+  - Graceful handling when all analyses fail
+
+**💰 Configurable Pricing System (November 5, 2025):**
+- ✅ **Dynamic pricing configuration** - No code changes needed when switching models
+  - New `config/pricing.json` with pricing for phi-4-multimodal-instruct, gpt-4o-mini, gpt-4o
+  - New `utils/config.py` with PricingConfig class
+  - Support for multiple embedding models (text-embedding-3-small, text-embedding-3-large)
+- ✅ **Environment variable overrides** - Easy testing and custom pricing
+  - `PRICING_INPUT_PER_1M` - Override input token pricing for all models
+  - `PRICING_OUTPUT_PER_1M` - Override output token pricing for all models
+  - `PRICING_EMBEDDING_PER_1M` - Override embedding token pricing
+- ✅ **Thread-safe token tracking** - Accurate counts in parallel processing
+  - threading.Lock in AnalyzerAgent for concurrent token accumulation
+  - Model names (llm_model, embedding_model) tracked in state
+  - Embedding token estimation (~300 tokens per chunk average)
+
+**🔧 Critical Bug Fixes:**
+- ✅ **Stats tab fix (November 5, 2025)** - Fixed zeros displaying in Stats tab
+  - Processing time now calculated from start_time (was showing 0.0s)
+  - Token usage tracked across all agents (was showing zeros)
+  - Cost estimates calculated with accurate token counts (was showing $0.00)
+  - Thread-safe token accumulation in parallel processing
+- ✅ **LLM Response Normalization** - Prevents Pydantic validation errors
+  - Handles cases where LLM returns strings for array fields
+  - Auto-converts "Not available" strings to proper list format
+  - Robust handling of JSON type mismatches
+
+**🏗️ Architecture Improvements:**
+- ✅ **Streaming Workflow** - Replaced LangGraph with generator-based streaming
+  - Better user feedback with progressive updates
+  - More control over workflow execution
+  - Improved error handling and recovery
+- ✅ **State Management** - Enhanced data flow
+  - `filtered_papers` and `filtered_analyses` for quality control
+  - `model_desc` dictionary for model metadata
+  - Cleaner separation of display vs. processing data
+
+### Version 2.0 - October 2025
+
+> **Note**: LangGraph was later replaced in v2.1 with a generator-based streaming workflow for better real-time user feedback and progressive UI updates.
 
 **🏗️ Architecture Overhaul:**
 - ✅ **LangGraph integration** - Professional workflow orchestration framework

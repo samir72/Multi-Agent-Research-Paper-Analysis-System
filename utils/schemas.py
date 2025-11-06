@@ -91,6 +91,7 @@ class ValidatedOutput(BaseModel):
     citations: List[Citation] = Field(..., description="All citations used")
     retrieved_chunks: List[str] = Field(..., description="Chunk IDs used for grounding")
     token_usage: Dict[str, int] = Field(default_factory=dict, description="Token usage stats")
+    model_desc: Dict[str, str] = Field(default_factory=dict, description="Model descriptions")
     cost_estimate: float = Field(..., description="Estimated cost in USD")
     processing_time: float = Field(..., description="Processing time in seconds")
 

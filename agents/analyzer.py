@@ -26,7 +26,7 @@ class AnalyzerAgent:
     def __init__(
         self,
         rag_retriever: RAGRetriever,
-        #model: str = "Phi-4-multimodal-instruct",
+        #model: str = "phi-4-multimodal-instruct",
         model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
         temperature: float = 0.0,
         timeout: int = 60
@@ -93,10 +93,38 @@ Provide your analysis in the following JSON format:
 Important:
 - Use ONLY information from the provided context
 - Be specific and cite which parts of the context support your statements
-- If information is not available in the context, indicate "Not available in provided context"
+- For string fields (methodology, conclusions): use "Not available in provided context" if information is missing
+- For array fields (key_findings, limitations, main_contributions, citations): use ["Not available in provided context"] or [] if information is missing
+- ALWAYS maintain correct JSON types: strings for text fields, arrays for list fields
 - Provide confidence score based on context completeness
 """
         return prompt
+
+    def _normalize_analysis_response(self, data: dict) -> dict:
+        """
+        Normalize LLM response to ensure list fields are lists, not strings.
+
+        This handles cases where the LLM returns a string (e.g., "Not available in provided context")
+        for fields that should be lists, preventing Pydantic validation errors.
+
+        Args:
+            data: Raw analysis data dictionary from LLM
+
+        Returns:
+            Normalized dictionary with correct types for all fields
+        """
+        list_fields = ['key_findings', 'limitations', 'main_contributions', 'citations']
+
+        for field in list_fields:
+            if field in data and isinstance(data[field], str):
+                # Convert string to single-element list
+                data[field] = [data[field]] if data[field] else []
+                logger.warning(
+                    f"Normalized '{field}' from string to list. "
+                    f"Original value: '{data[field][0] if data[field] else ''}'"
+                )
+
+        return data
 
     def analyze_paper(
         self,
@@ -176,6 +204,9 @@ Important:
 
             # Parse response
             analysis_data = json.loads(response.choices[0].message.content)
+
+            # Normalize response to ensure list fields are lists (not strings)
+            analysis_data = self._normalize_analysis_response(analysis_data)
 
             # Calculate confidence based on context completeness
             confidence = min(len(all_chunks) / top_k_chunks, 1.0)

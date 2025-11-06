@@ -61,8 +61,16 @@ class EmbeddingGenerator:
             Embedding vector
 
         Raises:
+            ValueError: If input text is empty or model not configured
             Exception: If embedding generation fails
         """
+        # Validate input
+        if not text or not text.strip():
+            raise ValueError("Input text cannot be empty or whitespace-only")
+
+        if not self.embedding_model:
+            raise ValueError("Embedding model not configured. Set AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME environment variable")
+
         try:
             response = self.client.embeddings.create(
                 input=text,
@@ -90,14 +98,28 @@ class EmbeddingGenerator:
             List of embedding vectors
 
         Raises:
+            ValueError: If texts is empty or model not configured
             Exception: If embedding generation fails
         """
+        # Validate input
+        if not self.embedding_model:
+            raise ValueError("Embedding model not configured. Set AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME environment variable")
+
+        # Filter out empty strings
+        valid_texts = [text for text in texts if text and text.strip()]
+
+        if not valid_texts:
+            raise ValueError("No valid texts to embed. All texts are empty or whitespace-only")
+
+        if len(valid_texts) != len(texts):
+            logger.warning(f"Filtered out {len(texts) - len(valid_texts)} empty texts from batch")
+
         all_embeddings = []
 
         try:
             # Process in batches
-            for i in range(0, len(texts), self.batch_size):
-                batch = texts[i:i + self.batch_size]
+            for i in range(0, len(valid_texts), self.batch_size):
+                batch = valid_texts[i:i + self.batch_size]
 
                 logger.info(f"Generating embeddings for batch {i // self.batch_size + 1}")
 
