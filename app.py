@@ -11,6 +11,13 @@ from dotenv import load_dotenv
 import gradio as gr
 import pandas as pd
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # LangGraph imports
 from langgraph.graph import StateGraph, END
 
@@ -22,6 +29,14 @@ from utils.arxiv_client import ArxivClient
 from utils.pdf_processor import PDFProcessor
 from utils.cache import SemanticCache
 from utils.schemas import AgentState
+
+# Import MCP client if available
+try:
+    from utils.mcp_arxiv_client import MCPArxivClient
+    MCP_AVAILABLE = True
+except ImportError:
+    MCP_AVAILABLE = False
+    logger.warning("MCP client not available - falling back to direct arXiv API")
 
 # Import RAG components
 from rag.embeddings import EmbeddingGenerator
@@ -35,13 +50,6 @@ from agents.synthesis import SynthesisAgent
 from agents.citation import CitationAgent
 
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
 
 class ResearchPaperAnalyzer:
     """Main application class for research paper analysis."""
@@ -50,8 +58,20 @@ class ResearchPaperAnalyzer:
         """Initialize the analyzer with all components."""
         logger.info("Initializing Research Paper Analyzer...")
 
-        # Initialize components
-        self.arxiv_client = ArxivClient()
+        # Initialize arXiv client (MCP or direct API)
+        use_mcp = os.getenv("USE_MCP_ARXIV", "false").lower() == "true"
+        if use_mcp and MCP_AVAILABLE:
+            logger.info("Using MCP arXiv client")
+            storage_path = os.getenv("MCP_ARXIV_STORAGE_PATH", "data/mcp_papers")
+            self.arxiv_client = MCPArxivClient(storage_path=storage_path)
+        else:
+            if use_mcp and not MCP_AVAILABLE:
+                logger.warning("MCP requested but not available - using direct arXiv API")
+            else:
+                logger.info("Using direct arXiv API client")
+            self.arxiv_client = ArxivClient()
+
+        # Initialize other components
         self.pdf_processor = PDFProcessor()
         self.embedding_generator = EmbeddingGenerator()
         self.vector_store = VectorStore()

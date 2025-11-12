@@ -2,7 +2,7 @@
 Retriever Agent: Search arXiv, download papers, and chunk for RAG.
 """
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Union
 from pathlib import Path
 
 from utils.arxiv_client import ArxivClient
@@ -10,6 +10,12 @@ from utils.pdf_processor import PDFProcessor
 from utils.schemas import AgentState, PaperChunk
 from rag.vector_store import VectorStore
 from rag.embeddings import EmbeddingGenerator
+
+# Import MCPArxivClient for type hints
+try:
+    from utils.mcp_arxiv_client import MCPArxivClient
+except ImportError:
+    MCPArxivClient = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,7 +29,7 @@ class RetrieverAgent:
 
     def __init__(
         self,
-        arxiv_client: ArxivClient,
+        arxiv_client: Union[ArxivClient, 'MCPArxivClient'],
         pdf_processor: PDFProcessor,
         vector_store: VectorStore,
         embedding_generator: EmbeddingGenerator
@@ -32,7 +38,7 @@ class RetrieverAgent:
         Initialize Retriever Agent.
 
         Args:
-            arxiv_client: ArxivClient instance
+            arxiv_client: ArxivClient or MCPArxivClient instance (both implement same interface)
             pdf_processor: PDFProcessor instance
             vector_store: VectorStore instance
             embedding_generator: EmbeddingGenerator instance

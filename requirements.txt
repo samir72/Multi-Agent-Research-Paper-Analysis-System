@@ -14,6 +14,11 @@ arxiv>=2.0.0
 pypdf>=3.0.0
 pydantic>=2.0.0
 
+# MCP (Model Context Protocol)
+mcp>=0.9.0
+arxiv-mcp-server>=0.1.0
+nest-asyncio>=1.5.0
+
 # Utilities
 python-dotenv>=1.0.0
 tenacity>=8.0.0
@@ -25,3 +30,5 @@ tiktoken>=0.5.0
 # Testing
 pytest>=7.0.0
 pytest-mock>=3.10.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.0.0

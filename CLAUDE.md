@@ -27,11 +27,12 @@ User Query → Retriever → Analyzer → Synthesis → Citation → Output
 ### Agent Responsibilities
 
 1. **RetrieverAgent** (`agents/retriever.py`):
-   - Searches arXiv API using `ArxivClient`
-   - Downloads PDFs to `data/papers/` (cached)
+   - Searches arXiv API using `ArxivClient` OR `MCPArxivClient` (configurable via env)
+   - Downloads PDFs to `data/papers/` (direct API) or MCP server storage (MCP mode)
    - Processes PDFs with `PDFProcessor` (500-token chunks, 50-token overlap)
    - Generates embeddings via `EmbeddingGenerator` (Azure OpenAI text-embedding-3-small)
    - Stores chunks in ChromaDB via `VectorStore`
+   - **MCP Support**: Optional Model Context Protocol integration for standardized arXiv access
 
 2. **AnalyzerAgent** (`agents/analyzer.py`):
    - Analyzes each paper individually using RAG
@@ -116,6 +117,10 @@ cp .env.example .env
 # AZURE_OPENAI_API_KEY=your-key
 # AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o-mini
 # AZURE_OPENAI_API_VERSION=2024-02-01  # optional
+
+# Optional MCP (Model Context Protocol) variables:
+# USE_MCP_ARXIV=false  # Set to 'true' to use arXiv MCP server
+# MCP_ARXIV_STORAGE_PATH=./data/mcp_papers/  # MCP server storage path
 ```
 
 ### Data Management
@@ -162,6 +167,45 @@ ArxivClient uses tenacity for resilient API calls:
 - Exponential backoff (4s min, 10s max)
 - Applied to search_papers() and download_paper()
 
+### MCP (Model Context Protocol) Integration
+
+The system supports **optional** integration with arXiv MCP servers as an alternative to direct arXiv API access:
+
+**Architecture**:
+- `MCPArxivClient` (`utils/mcp_arxiv_client.py`) implements same interface as `ArxivClient`
+- RetrieverAgent accepts either client type via dependency injection
+- App selects client based on `USE_MCP_ARXIV` environment variable
+- Falls back to direct API if MCP unavailable
+
+**Key Features**:
+- Async-first design with sync wrappers for compatibility
+- Connects to external MCP server via stdio protocol
+- Uses MCP tools: `search_papers`, `download_paper`, `list_papers`
+- Transforms MCP responses to `Paper` Pydantic objects
+- Same retry logic and caching behavior as ArxivClient
+- **Automatic direct download fallback** if MCP storage inaccessible
+- Tool discovery logging for diagnostics
+
+**Implementation Notes**:
+- Uses `nest-asyncio` for sync/async event loop compatibility
+- MCP session lifecycle managed with `__aenter__`/`__aexit__`
+- Graceful fallback to filesystem listing if MCP `list_papers` fails
+- All Paper schema fields validated and populated from MCP data
+- **Download fallback**: If MCP download succeeds but file not found, downloads directly from arXiv URL
+- Tool discovery at session init logs all available MCP capabilities
+
+**Zero Breaking Changes**:
+- Downstream agents (Analyzer, Synthesis, Citation) unaffected
+- Same state dictionary structure maintained
+- PDF processing, chunking, and RAG unchanged
+- Toggle via environment variable without code changes
+
+**MCP Download Issue Fix** (see `MCP_FIX_DOCUMENTATION.md`):
+- **Problem**: Remote MCP servers download to their own storage, files don't appear in client's local directory
+- **Solution**: Automatic fallback to direct arXiv download when MCP file is inaccessible
+- **Diagnostic**: Run `python test_mcp_diagnostic.py` to test MCP setup and view available tools
+- **Result**: Guaranteed PDF downloads regardless of MCP server configuration
+
 ### PDF Processing Edge Cases
 
 - Some PDFs may be scanned images (extraction fails gracefully)
@@ -192,11 +236,16 @@ with patch('agents.analyzer.AzureOpenAI', return_value=mock_client):
     agent = AnalyzerAgent(rag_retriever=mock_retriever)
 ```
 
-Current test coverage focuses on AnalyzerAgent (18 tests). When adding tests for other agents, follow the same pattern:
+Current test coverage:
+- **AnalyzerAgent** (18 tests): Core analysis workflow and error handling
+- **MCPArxivClient** (21 tests): MCP tool integration, async/sync wrappers, response parsing
+
+When adding tests for other agents, follow the same pattern:
 - Fixtures for mock dependencies
 - Test both success and error paths
 - Verify state transformations
 - Test edge cases (empty inputs, API failures)
+- For async code, use `pytest-asyncio` with `@pytest.mark.asyncio`
 
 ## Common Modification Points
 
@@ -219,6 +268,13 @@ Current test coverage focuses on AnalyzerAgent (18 tests). When adding tests for
 **Adding arXiv categories**:
 - Extend `ARXIV_CATEGORIES` list in `app.py`
 - Format: `"code - Description"` (e.g., `"cs.AI - Artificial Intelligence"`)
+
+**Switching between MCP and direct arXiv API**:
+- Set `USE_MCP_ARXIV=true` in .env to use MCP server
+- Set `USE_MCP_ARXIV=false` (or omit) to use direct API
+- Configure `MCP_ARXIV_STORAGE_PATH` to match MCP server's storage
+- No code changes required - client selected automatically in `app.py`
+- Both clients implement identical interface for seamless switching
 
 ## Cost and Performance Considerations
 

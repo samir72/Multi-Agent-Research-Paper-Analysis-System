@@ -44,18 +44,19 @@ A production-ready multi-agent system that analyzes academic papers from arXiv, 
 
 ## Features
 
-- **Automated Paper Retrieval**: Search and download papers from arXiv
+- **Automated Paper Retrieval**: Search and download papers from arXiv (direct API or MCP server)
 - **RAG-Based Analysis**: Extract methodology, findings, conclusions, and limitations using retrieval-augmented generation
 - **Cross-Paper Synthesis**: Identify consensus points, contradictions, and research gaps
 - **Citation Management**: Generate proper APA-style citations with source validation
 - **Semantic Caching**: Optimize costs by caching similar queries
 - **Deterministic Outputs**: Temperature=0 and structured outputs for reproducibility
-- **LangGraph Orchestration**: Professional workflow with conditional routing
+- **MCP Integration**: Optional Model Context Protocol support with automatic fallback
 - **High Performance**: 4x faster with parallel processing (2-3 min for 5 papers)
 - **Smart Error Handling**: Circuit breaker, graceful degradation, friendly error messages
 - **Progressive UI**: Real-time updates as papers are analyzed with streaming results
 - **Smart Quality Filtering**: Automatically excludes failed analyses (0% confidence) from synthesis
 - **Enhanced UX**: Clickable PDF links, paper titles + confidence scores, status indicators
+- **Comprehensive Testing**: 39 total tests (18 analyzer + 21 MCP) with diagnostic tools
 
 ## Architecture
 
@@ -114,8 +115,9 @@ User Query → Retriever → [Has papers?]
 - **Agent Framework**: Generator-based streaming workflow with progressive UI updates
 - **Parallel Processing**: ThreadPoolExecutor (4 concurrent workers) with as_completed for streaming
 - **UI**: Gradio 5.49.1 with tabbed interface and real-time updates
-- **Data Source**: arXiv API
-- **Testing**: pytest with comprehensive test suite
+- **Data Source**: arXiv API (direct) or arXiv MCP server (optional)
+- **MCP Integration**: Model Context Protocol client with automatic fallback
+- **Testing**: pytest with comprehensive test suite (pytest-asyncio for async tests)
 - **Type Safety**: Pydantic V2 schemas for validation
 - **Pricing**: Configurable pricing system (JSON + environment overrides)
 
@@ -157,7 +159,74 @@ Optional:
 - `PRICING_OUTPUT_PER_1M`: Override output token pricing for all models (per 1M tokens)
 - `PRICING_EMBEDDING_PER_1M`: Override embedding token pricing (per 1M tokens)
 
+**MCP (Model Context Protocol) Support** (Optional):
+- `USE_MCP_ARXIV`: Set to `true` to use arXiv MCP server instead of direct arXiv API (default: `false`)
+- `MCP_ARXIV_STORAGE_PATH`: Path where MCP server stores papers (default: `./data/mcp_papers/`)
+
 **Note**: Pricing is configured in `config/pricing.json` with support for phi-4-multimodal-instruct, gpt-4o-mini, and gpt-4o. Environment variables override JSON settings.
+
+### MCP (Model Context Protocol) Integration
+
+The system supports using an external arXiv MCP server as an alternative to direct arXiv API access. This provides a standardized protocol for accessing arXiv papers through the Model Context Protocol.
+
+**Setup Instructions:**
+
+1. Install the arXiv MCP server:
+```bash
+pip install arxiv-mcp-server
+```
+
+2. Configure the MCP server (e.g., in Claude Desktop's config):
+```json
+{
+  "mcpServers": {
+    "arxiv": {
+      "command": "arxiv-mcp-server",
+      "env": {
+        "ARXIV_STORAGE_PATH": "/path/to/papers"
+      }
+    }
+  }
+}
+```
+
+3. Enable MCP in your `.env`:
+```bash
+USE_MCP_ARXIV=true
+MCP_ARXIV_STORAGE_PATH=/path/to/papers
+```
+
+**Features:**
+- Standardized access to arXiv papers via MCP tools
+- Same functionality as direct API (search, download, metadata extraction)
+- Compatible with existing workflow (zero breaking changes)
+- **Automatic fallback**: Downloads directly from arXiv if MCP server storage is inaccessible
+- Comprehensive tool discovery and diagnostic logging
+
+**Note:** The system defaults to direct arXiv API access. MCP integration is optional and can be toggled via environment variable.
+
+**Troubleshooting MCP Downloads:**
+If PDFs aren't appearing in your storage directory, see [MCP_FIX_DOCUMENTATION.md](MCP_FIX_DOCUMENTATION.md) for:
+- Root cause explanation (client-server storage mismatch)
+- How the automatic fallback works
+- Diagnostic script: `python test_mcp_diagnostic.py`
+- Detailed troubleshooting guide
+
+**Data Management:**
+
+```bash
+# Clear MCP cached papers
+rm -rf data/mcp_papers/
+
+# Clear direct API cached papers
+rm -rf data/papers/
+
+# Clear vector store (useful for testing)
+rm -rf data/chroma_db/
+
+# Clear semantic cache
+rm -rf data/cache/
+```
 
 4. Run the application:
 ```bash
@@ -202,18 +271,24 @@ Multi-Agent-Research-Paper-Analysis-System/
 │   └── retrieval.py               # RAG retrieval & context formatting
 ├── utils/
 │   ├── __init__.py
-│   ├── arxiv_client.py            # arXiv API wrapper
+│   ├── arxiv_client.py            # arXiv API wrapper (direct API)
+│   ├── mcp_arxiv_client.py        # arXiv MCP client (optional)
 │   ├── pdf_processor.py           # PDF parsing & chunking
 │   ├── cache.py                   # Semantic caching layer
-│   ├── config.py                  # Pricing configuration management (NEW)
+│   ├── config.py                  # Pricing configuration management
 │   └── schemas.py                 # Pydantic data models
 ├── config/
-│   └── pricing.json               # Model pricing configuration (NEW)
+│   └── pricing.json               # Model pricing configuration
 ├── tests/
 │   ├── __init__.py
-│   └── test_analyzer.py           # Unit tests for analyzer agent
+│   ├── test_analyzer.py           # Unit tests for analyzer agent
+│   └── test_mcp_arxiv_client.py   # Unit tests for MCP client (21 tests)
+├── test_mcp_diagnostic.py         # MCP setup diagnostic script (NEW)
+├── MCP_FIX_DOCUMENTATION.md       # MCP troubleshooting guide (NEW)
+├── MCP_FIX_SUMMARY.md             # MCP fix quick reference (NEW)
 └── data/                           # Created at runtime
-    ├── papers/                     # Downloaded PDFs (cached)
+    ├── papers/                     # Downloaded PDFs (direct API, cached)
+    ├── mcp_papers/                 # Downloaded PDFs (MCP mode, cached)
     └── chroma_db/                  # Vector store persistence
 ```
 
@@ -300,6 +375,14 @@ pytest tests/test_analyzer.py::TestAnalyzerAgent::test_analyze_paper_success -v
   - State management and workflow tests
   - Integration tests with mocked dependencies
   - Azure OpenAI client initialization tests
+- **MCP arXiv Client** (`tests/test_mcp_arxiv_client.py`): 21 comprehensive tests
+  - Async/sync wrapper tests for all client methods
+  - MCP tool call mocking and response parsing
+  - Error handling and fallback mechanisms
+  - PDF caching and storage path management
+  - Integration with Paper schema validation
+  - Tool discovery and diagnostics
+  - Direct download fallback scenarios
 
 **What's Tested:**
 - ✅ Agent initialization and configuration
@@ -322,9 +405,31 @@ pytest tests/test_analyzer.py::TestAnalyzerAgent::test_analyze_paper_success -v
 
 Tests use:
 - **pytest**: Test framework with fixtures
-- **unittest.mock**: Mocking external dependencies (Azure OpenAI, RAG components)
+- **pytest-asyncio**: Async test support for MCP client
+- **pytest-cov**: Code coverage reporting
+- **unittest.mock**: Mocking external dependencies (Azure OpenAI, RAG components, MCP tools)
 - **Pydantic models**: Type-safe test data structures
 - **Isolated testing**: No external API calls in unit tests
+
+### MCP Diagnostic Testing
+
+For MCP integration troubleshooting, run the diagnostic script:
+
+```bash
+# Test MCP setup and configuration
+python test_mcp_diagnostic.py
+```
+
+This diagnostic tool:
+- ✅ Validates environment configuration (`USE_MCP_ARXIV`, `MCP_ARXIV_STORAGE_PATH`)
+- ✅ Verifies storage directory setup and permissions
+- ✅ Lists available MCP tools via tool discovery
+- ✅ Tests search functionality with real queries
+- ✅ Tests download with file verification
+- ✅ Shows file system state before/after operations
+- ✅ Provides detailed logging for troubleshooting
+
+See [MCP_FIX_DOCUMENTATION.md](MCP_FIX_DOCUMENTATION.md) for detailed troubleshooting guidance.
 
 ## Performance
 
@@ -485,7 +590,57 @@ For issues, questions, or feature requests, please:
 
 ## Changelog
 
-### Version 2.1 - November 2025 (Latest)
+### Version 2.2 - November 2025 (Latest)
+
+**🔌 MCP (Model Context Protocol) Integration:**
+- ✅ **Optional MCP Support** - Use arXiv MCP server as alternative to direct API
+  - New `MCPArxivClient` with same interface as `ArxivClient` for seamless switching
+  - Toggle via `USE_MCP_ARXIV` environment variable (default: `false`)
+  - Configurable storage path via `MCP_ARXIV_STORAGE_PATH` environment variable
+  - Async-first design with sync wrappers for compatibility
+- ✅ **MCP Download Fallback** - Guaranteed PDF downloads regardless of MCP server configuration
+  - Automatic fallback to direct arXiv download when MCP storage is inaccessible
+  - Handles remote MCP servers that don't share filesystem with client
+  - Comprehensive tool discovery logging for diagnostics
+  - Run `python test_mcp_diagnostic.py` to test MCP setup
+- ✅ **Zero Breaking Changes** - Complete backward compatibility
+  - RetrieverAgent accepts both `ArxivClient` and `MCPArxivClient` via dependency injection
+  - Same state dictionary structure maintained across all agents
+  - PDF processing, chunking, and RAG workflow unchanged
+  - Client selection automatic based on environment variables
+
+**📦 Dependencies Updated:**
+- ✅ **New MCP packages** - Added to `requirements.txt`
+  - `mcp>=0.9.0` - Model Context Protocol client library
+  - `arxiv-mcp-server>=0.1.0` - arXiv MCP server implementation
+  - `nest-asyncio>=1.5.0` - Async/sync event loop compatibility
+  - `pytest-asyncio>=0.21.0` - Async testing support
+  - `pytest-cov>=4.0.0` - Test coverage reporting
+- ✅ **Environment configuration** - Updated `.env.example`
+  - `USE_MCP_ARXIV` - Toggle MCP vs direct API (default: `false`)
+  - `MCP_ARXIV_STORAGE_PATH` - MCP server storage location (default: `./data/mcp_papers/`)
+
+**🧪 Testing & Diagnostics:**
+- ✅ **MCP Test Suite** - 21 comprehensive tests in `tests/test_mcp_arxiv_client.py`
+  - Async/sync wrapper tests for all client methods
+  - MCP tool call mocking and response parsing
+  - Error handling and fallback mechanisms
+  - PDF caching and storage path management
+- ✅ **Diagnostic Script** - New `test_mcp_diagnostic.py` for troubleshooting
+  - Environment configuration validation
+  - Storage directory verification
+  - MCP tool discovery and listing
+  - Search and download functionality testing
+  - File system state inspection
+
+**📚 Documentation:**
+- ✅ **MCP Integration Guide** - Comprehensive documentation added
+  - `MCP_FIX_DOCUMENTATION.md` - Root cause analysis, architecture, troubleshooting
+  - `MCP_FIX_SUMMARY.md` - Quick reference for the MCP download fix
+  - Updated `CLAUDE.md` - Developer documentation with MCP integration details
+  - Updated README - MCP setup instructions and configuration guide
+
+### Version 2.1 - November 2025
 
 **🎨 Enhanced User Experience:**
 - ✅ **Progressive Papers Tab** - Real-time updates as papers are analyzed
@@ -586,13 +741,22 @@ For issues, questions, or feature requests, please:
 - ✅ Improved type safety with Pydantic schemas
 - ✅ Added QUICKSTART.md for quick setup
 
+### Completed Features (Recent)
+- [x] MCP (Model Context Protocol) integration with arXiv
+- [x] MCP diagnostic tools and comprehensive testing
+- [x] Automatic fallback mechanism for reliable downloads
+- [x] Configurable pricing system
+- [x] Progressive UI with streaming results
+- [x] Smart quality filtering (0% confidence exclusion)
+
 ### Coming Soon
 - [ ] Tests for Retriever, Synthesis, and Citation agents
 - [ ] Integration tests for full workflow
 - [ ] CI/CD pipeline with automated testing (GitHub Actions already set up for deployment)
-- [ ] Docker containerization
+- [ ] Docker containerization improvements
 - [ ] Performance benchmarking suite
 - [ ] Pre-commit hooks for code quality
+- [ ] Additional MCP server support (beyond arXiv)
 
 ---
 
