@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -eux
+python -m pip install --upgrade pip setuptools wheel
+pip install --no-cache-dir --upgrade --upgrade-strategy eager -r requirements.txt
+python -m pipdeptree -r -p mcp || true
+pip check
+python - <<'PY'
+import mcp, fastmcp
+print("mcp:", mcp.__version__, "fastmcp:", fastmcp.__version__)
+PY
