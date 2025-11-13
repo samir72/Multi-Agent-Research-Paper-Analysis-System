@@ -31,9 +31,7 @@ env/
 ENV/
 
 # Data directories
-data/papers/*.pdf
-data/chroma_db/
-data/cache/
+data/
 
 # IDE
 .vscode/
