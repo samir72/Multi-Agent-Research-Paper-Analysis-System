@@ -87,25 +87,35 @@ Provide your analysis in the following JSON format:
     "conclusions": "Main conclusions of the paper",
     "limitations": ["Limitation 1", "Limitation 2"],
     "main_contributions": ["Contribution 1", "Contribution 2"],
-    "citations": ["Context references used"]
+    "citations": ["Reference 1", "Reference 2", "Reference 3"]
 }}
 
-Important:
+CRITICAL JSON FORMATTING RULES:
 - Use ONLY information from the provided context
 - Be specific and cite which parts of the context support your statements
 - For string fields (methodology, conclusions): use "Not available in provided context" if information is missing
-- For array fields (key_findings, limitations, main_contributions, citations): use ["Not available in provided context"] or [] if information is missing
-- ALWAYS maintain correct JSON types: strings for text fields, arrays for list fields
-- Provide confidence score based on context completeness
+- For array fields (key_findings, limitations, main_contributions, citations):
+  * MUST be flat arrays of strings ONLY: ["item1", "item2"]
+  * If no information available, use empty array: []
+  * NEVER nest arrays: [[], "text"] or [["nested"]] are INVALID
+  * NEVER include null, empty strings, or non-string values
+  * Each array element must be a non-empty string
+- ALWAYS maintain correct JSON types: strings for text fields, flat arrays of strings for list fields
 """
         return prompt
 
     def _normalize_analysis_response(self, data: dict) -> dict:
         """
-        Normalize LLM response to ensure list fields are lists, not strings.
+        Normalize LLM response to ensure list fields contain only strings.
 
-        This handles cases where the LLM returns a string (e.g., "Not available in provided context")
-        for fields that should be lists, preventing Pydantic validation errors.
+        Handles multiple edge cases:
+        - Strings converted to single-element lists
+        - Nested lists flattened recursively
+        - None values filtered out
+        - Empty strings removed
+        - Mixed types converted to strings
+
+        This prevents Pydantic validation errors from malformed LLM responses.
 
         Args:
             data: Raw analysis data dictionary from LLM
@@ -115,14 +125,55 @@ Important:
         """
         list_fields = ['key_findings', 'limitations', 'main_contributions', 'citations']
 
+        def flatten_and_clean(value):
+            """Recursively flatten nested lists and clean values."""
+            if isinstance(value, str):
+                # Single string - return as list if non-empty
+                return [value.strip()] if value.strip() else []
+
+            elif isinstance(value, list):
+                # List - recursively flatten and filter
+                cleaned = []
+                for item in value:
+                    if isinstance(item, str):
+                        # Add non-empty strings
+                        if item.strip():
+                            cleaned.append(item.strip())
+                    elif isinstance(item, list):
+                        # Recursively flatten nested lists
+                        cleaned.extend(flatten_and_clean(item))
+                    elif item is not None and str(item).strip():
+                        # Convert non-None, non-string values to strings
+                        cleaned.append(str(item).strip())
+                return cleaned
+
+            elif value is not None:
+                # Non-list, non-string, non-None - stringify
+                str_value = str(value).strip()
+                return [str_value] if str_value else []
+
+            else:
+                # None value
+                return []
+
         for field in list_fields:
-            if field in data and isinstance(data[field], str):
-                # Convert string to single-element list
-                data[field] = [data[field]] if data[field] else []
-                logger.warning(
-                    f"Normalized '{field}' from string to list. "
-                    f"Original value: '{data[field][0] if data[field] else ''}'"
-                )
+            if field not in data:
+                # Missing field - set to empty list
+                data[field] = []
+                logger.debug(f"Field '{field}' missing in LLM response, set to []")
+            else:
+                original_value = data[field]
+                normalized_value = flatten_and_clean(original_value)
+
+                # Log if normalization changed the structure
+                if original_value != normalized_value:
+                    logger.warning(
+                        f"Normalized '{field}': {type(original_value).__name__} "
+                        f"with {len(original_value) if isinstance(original_value, list) else 1} items "
+                        f"-> list with {len(normalized_value)} items"
+                    )
+
+                data[field] = normalized_value
 
         return data
 

@@ -196,6 +196,51 @@ class ResearchPaperAnalyzer:
             state["progress"](0.1, desc="Searching and downloading papers...")
         return self.retriever_agent.run(state)
 
+    def _filter_low_confidence_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Filter out analyses with low confidence scores.
+
+        Args:
+            state: Current workflow state
+
+        Returns:
+            Updated state with filtered_analyses
+        """
+        analyses = state.get("analyses", [])
+        # Filter out analyses with confidence score of 0.0 (failed analyses)
+        filtered_analyses = [a for a in analyses if a.confidence_score > 0.0]
+        state["filtered_analyses"] = filtered_analyses
+        logger.info(f"Filtered {len(filtered_analyses)}/{len(analyses)} analyses (excluded {len(analyses) - len(filtered_analyses)} failures)")
+        return state
+
+    def _synthesis_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        LangGraph node for synthesis agent.
+
+        Args:
+            state: Current workflow state
+
+        Returns:
+            Updated state with synthesis
+        """
+        if "progress" in state:
+            state["progress"](0.7, desc="Synthesizing findings across papers...")
+        return self.synthesis_agent.run(state)
+
+    def _citation_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        LangGraph node for citation agent.
+
+        Args:
+            state: Current workflow state
+
+        Returns:
+            Updated state with validated_output
+        """
+        if "progress" in state:
+            state["progress"](0.9, desc="Validating and generating citations...")
+        return self.citation_agent.run(state)
+
     def _create_empty_outputs(self) -> Tuple[pd.DataFrame, str, str, str, str]:
         """Create empty outputs for initial state."""
         empty_df = pd.DataFrame({"Status": ["⏳ Initializing..."]})

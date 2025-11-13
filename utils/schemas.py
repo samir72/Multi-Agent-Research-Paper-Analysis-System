@@ -3,7 +3,7 @@ Pydantic schemas for type safety and validation.
 """
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, field_validator
 import logging
 
 logger = logging.getLogger(__name__)
@@ -115,6 +115,40 @@ class Analysis(BaseModel):
     main_contributions: List[str] = Field(default_factory=list, description="Key contributions")
     confidence_score: float = Field(..., ge=0.0, le=1.0, description="Analysis confidence")
 
+    @field_validator('key_findings', 'limitations', 'citations', 'main_contributions', mode='before')
+    @classmethod
+    def normalize_string_lists(cls, v, info):
+        """
+        Normalize list fields to ensure they contain only strings.
+        Handles nested lists, None values, and mixed types.
+        """
+        def flatten_and_clean(value):
+            """Recursively flatten nested lists and clean values."""
+            if isinstance(value, str):
+                return [value.strip()] if value.strip() else []
+            elif isinstance(value, list):
+                cleaned = []
+                for item in value:
+                    if isinstance(item, str):
+                        if item.strip():
+                            cleaned.append(item.strip())
+                    elif isinstance(item, list):
+                        # Recursively flatten nested lists
+                        cleaned.extend(flatten_and_clean(item))
+                    elif item is not None and str(item).strip():
+                        cleaned.append(str(item).strip())
+                return cleaned
+            elif value is not None:
+                str_value = str(value).strip()
+                return [str_value] if str_value else []
+            else:
+                return []
+
+        result = flatten_and_clean(v)
+        if v != result:
+            logger.warning(f"Normalized '{info.field_name}' in Analysis: cleaned nested/invalid values")
+        return result
+
 
 class ConsensusPoint(BaseModel):
     """Schema for consensus findings across papers."""
@@ -122,6 +156,34 @@ class ConsensusPoint(BaseModel):
     supporting_papers: List[str] = Field(..., description="Paper IDs supporting this claim")
     citations: List[str] = Field(..., description="Specific citations")
     confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence in consensus")
+
+    @field_validator('supporting_papers', 'citations', mode='before')
+    @classmethod
+    def normalize_string_lists(cls, v, info):
+        """Normalize list fields to ensure they contain only strings."""
+        def flatten_and_clean(value):
+            if isinstance(value, str):
+                return [value.strip()] if value.strip() else []
+            elif isinstance(value, list):
+                cleaned = []
+                for item in value:
+                    if isinstance(item, str) and item.strip():
+                        cleaned.append(item.strip())
+                    elif isinstance(item, list):
+                        cleaned.extend(flatten_and_clean(item))
+                    elif item is not None and str(item).strip():
+                        cleaned.append(str(item).strip())
+                return cleaned
+            elif value is not None:
+                str_value = str(value).strip()
+                return [str_value] if str_value else []
+            else:
+                return []
+
+        result = flatten_and_clean(v)
+        if v != result:
+            logger.warning(f"Normalized '{info.field_name}' in ConsensusPoint: cleaned nested/invalid values")
+        return result
 
 
 class Contradiction(BaseModel):
@@ -134,6 +196,34 @@ class Contradiction(BaseModel):
     citations: List[str] = Field(..., description="Specific citations for both sides")
     confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence in contradiction")
 
+    @field_validator('papers_a', 'papers_b', 'citations', mode='before')
+    @classmethod
+    def normalize_string_lists(cls, v, info):
+        """Normalize list fields to ensure they contain only strings."""
+        def flatten_and_clean(value):
+            if isinstance(value, str):
+                return [value.strip()] if value.strip() else []
+            elif isinstance(value, list):
+                cleaned = []
+                for item in value:
+                    if isinstance(item, str) and item.strip():
+                        cleaned.append(item.strip())
+                    elif isinstance(item, list):
+                        cleaned.extend(flatten_and_clean(item))
+                    elif item is not None and str(item).strip():
+                        cleaned.append(str(item).strip())
+                return cleaned
+            elif value is not None:
+                str_value = str(value).strip()
+                return [str_value] if str_value else []
+            else:
+                return []
+
+        result = flatten_and_clean(v)
+        if v != result:
+            logger.warning(f"Normalized '{info.field_name}' in Contradiction: cleaned nested/invalid values")
+        return result
+
 
 class SynthesisResult(BaseModel):
     """Schema for synthesis across multiple papers."""
@@ -143,6 +233,34 @@ class SynthesisResult(BaseModel):
     summary: str = Field(..., description="Executive summary")
     confidence_score: float = Field(..., ge=0.0, le=1.0, description="Overall confidence")
     papers_analyzed: List[str] = Field(..., description="List of paper IDs analyzed")
+
+    @field_validator('research_gaps', 'papers_analyzed', mode='before')
+    @classmethod
+    def normalize_string_lists(cls, v, info):
+        """Normalize list fields to ensure they contain only strings."""
+        def flatten_and_clean(value):
+            if isinstance(value, str):
+                return [value.strip()] if value.strip() else []
+            elif isinstance(value, list):
+                cleaned = []
+                for item in value:
+                    if isinstance(item, str) and item.strip():
+                        cleaned.append(item.strip())
+                    elif isinstance(item, list):
+                        cleaned.extend(flatten_and_clean(item))
+                    elif item is not None and str(item).strip():
+                        cleaned.append(str(item).strip())
+                return cleaned
+            elif value is not None:
+                str_value = str(value).strip()
+                return [str_value] if str_value else []
+            else:
+                return []
+
+        result = flatten_and_clean(v)
+        if v != result:
+            logger.warning(f"Normalized '{info.field_name}' in SynthesisResult: cleaned nested/invalid values")
+        return result
 
 
 class Citation(BaseModel):

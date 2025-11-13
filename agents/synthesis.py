@@ -119,13 +119,81 @@ Provide your synthesis in the following JSON format:
     "confidence_score": 0.0-1.0
 }}
 
-Important:
+CRITICAL JSON FORMATTING RULES:
 - Ground all statements in the provided analyses
 - Be specific about which papers support which claims
 - Identify both agreements and disagreements
 - Provide confidence scores based on consistency and evidence strength
+- For ALL array fields (citations, supporting_papers, papers_a, papers_b, research_gaps):
+  * MUST be flat arrays of strings ONLY: ["item1", "item2"]
+  * NEVER nest arrays: [[], "text"] or [["nested"]] are INVALID
+  * NEVER include null, empty strings, or non-string values
+  * Each array element must be a non-empty string
 """
         return prompt
+
+    def _normalize_synthesis_response(self, data: dict) -> dict:
+        """
+        Normalize synthesis LLM response to ensure all list fields contain only strings.
+
+        Handles nested lists, None values, and mixed types in:
+        - consensus_points[].citations
+        - consensus_points[].supporting_papers
+        - contradictions[].citations
+        - contradictions[].papers_a
+        - contradictions[].papers_b
+        - research_gaps
+
+        Args:
+            data: Raw synthesis data dictionary from LLM
+
+        Returns:
+            Normalized dictionary with correct types for all fields
+        """
+        def flatten_and_clean(value):
+            """Recursively flatten nested lists and clean values."""
+            if isinstance(value, str):
+                return [value.strip()] if value.strip() else []
+            elif isinstance(value, list):
+                cleaned = []
+                for item in value:
+                    if isinstance(item, str):
+                        if item.strip():
+                            cleaned.append(item.strip())
+                    elif isinstance(item, list):
+                        cleaned.extend(flatten_and_clean(item))
+                    elif item is not None and str(item).strip():
+                        cleaned.append(str(item).strip())
+                return cleaned
+            elif value is not None:
+                str_value = str(value).strip()
+                return [str_value] if str_value else []
+            else:
+                return []
+
+        # Normalize top-level research_gaps
+        if "research_gaps" in data:
+            data["research_gaps"] = flatten_and_clean(data["research_gaps"])
+        else:
+            data["research_gaps"] = []
+
+        # Normalize consensus_points
+        if "consensus_points" in data and isinstance(data["consensus_points"], list):
+            for cp in data["consensus_points"]:
+                if isinstance(cp, dict):
+                    cp["citations"] = flatten_and_clean(cp.get("citations", []))
+                    cp["supporting_papers"] = flatten_and_clean(cp.get("supporting_papers", []))
+
+        # Normalize contradictions
+        if "contradictions" in data and isinstance(data["contradictions"], list):
+            for contr in data["contradictions"]:
+                if isinstance(contr, dict):
+                    contr["citations"] = flatten_and_clean(contr.get("citations", []))
+                    contr["papers_a"] = flatten_and_clean(contr.get("papers_a", []))
+                    contr["papers_b"] = flatten_and_clean(contr.get("papers_b", []))
+
+        logger.debug("Synthesis response normalized successfully")
+        return data
 
     def synthesize(
         self,
@@ -174,6 +242,9 @@ Important:
 
             # Parse response
             synthesis_data = json.loads(response.choices[0].message.content)
+
+            # Normalize response to handle nested lists and mixed types
+            synthesis_data = self._normalize_synthesis_response(synthesis_data)
 
             # Create structured objects
             consensus_points = [

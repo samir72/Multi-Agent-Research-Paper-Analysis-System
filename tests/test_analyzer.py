@@ -353,6 +353,146 @@ class TestAnalyzerAgent:
         assert mock_rag_retriever.format_context.called
 
 
+class TestAnalyzerNormalization:
+    """Tests for LLM response normalization edge cases."""
+
+    @pytest.fixture
+    def analyzer_agent_for_normalization(self, mock_rag_retriever):
+        """Create analyzer agent with mocked Azure OpenAI client."""
+        with patch('agents.analyzer.AzureOpenAI'):
+            agent = AnalyzerAgent(mock_rag_retriever)
+            return agent
+
+    def test_normalize_nested_lists_in_citations(self, analyzer_agent_for_normalization):
+        """Test that nested lists in citations are flattened."""
+        agent = analyzer_agent_for_normalization
+
+        # LLM returns nested lists (the bug we're fixing)
+        malformed_data = {
+            "methodology": "Test methodology",
+            "key_findings": ["Finding 1", "Finding 2"],
+            "conclusions": "Test conclusions",
+            "limitations": ["Limitation 1"],
+            "main_contributions": ["Contribution 1"],
+            "citations": ["Citation 1", [], "Citation 2"]  # Nested empty list
+        }
+
+        normalized = agent._normalize_analysis_response(malformed_data)
+
+        # Should flatten and remove empty lists
+        assert normalized["citations"] == ["Citation 1", "Citation 2"]
+        assert all(isinstance(c, str) for c in normalized["citations"])
+
+    def test_normalize_deeply_nested_lists(self, analyzer_agent_for_normalization):
+        """Test deeply nested lists are flattened recursively."""
+        agent = analyzer_agent_for_normalization
+
+        malformed_data = {
+            "methodology": "Test",
+            "key_findings": [["Nested finding"], "Normal finding", [["Double nested"]]],
+            "conclusions": "Test",
+            "limitations": [],
+            "main_contributions": [],
+            "citations": [[["Triple nested citation"]]]
+        }
+
+        normalized = agent._normalize_analysis_response(malformed_data)
+
+        assert normalized["key_findings"] == ["Nested finding", "Normal finding", "Double nested"]
+        assert normalized["citations"] == ["Triple nested citation"]
+
+    def test_normalize_mixed_types_in_lists(self, analyzer_agent_for_normalization):
+        """Test that mixed types (strings, None, numbers) are handled."""
+        agent = analyzer_agent_for_normalization
+
+        malformed_data = {
+            "methodology": "Test",
+            "key_findings": ["Finding 1", None, "Finding 2", ""],
+            "conclusions": "Test",
+            "limitations": ["Limit 1", 123, "Limit 2"],  # Number mixed in
+            "main_contributions": [],
+            "citations": ["Citation", None, "", "  ", "Valid"]
+        }
+
+        normalized = agent._normalize_analysis_response(malformed_data)
+
+        # None and empty strings should be filtered out
+        assert normalized["key_findings"] == ["Finding 1", "Finding 2"]
+        # Numbers should be converted to strings
+        assert normalized["limitations"] == ["Limit 1", "123", "Limit 2"]
+        # Whitespace-only strings filtered out
+        assert normalized["citations"] == ["Citation", "Valid"]
+
+    def test_normalize_string_instead_of_list(self, analyzer_agent_for_normalization):
+        """Test that strings are converted to single-element lists."""
+        agent = analyzer_agent_for_normalization
+
+        malformed_data = {
+            "methodology": "Test",
+            "key_findings": "Single finding as string",  # Should be list
+            "conclusions": "Test",
+            "limitations": "Single limitation",  # Should be list
+            "main_contributions": [],
+            "citations": []
+        }
+
+        normalized = agent._normalize_analysis_response(malformed_data)
+
+        assert normalized["key_findings"] == ["Single finding as string"]
+        assert normalized["limitations"] == ["Single limitation"]
+
+    def test_normalize_missing_fields(self, analyzer_agent_for_normalization):
+        """Test that missing fields are set to empty lists."""
+        agent = analyzer_agent_for_normalization
+
+        malformed_data = {
+            "methodology": "Test",
+            "conclusions": "Test",
+            # key_findings, limitations, citations, main_contributions are missing
+        }
+
+        normalized = agent._normalize_analysis_response(malformed_data)
+
+        assert normalized["key_findings"] == []
+        assert normalized["limitations"] == []
+        assert normalized["citations"] == []
+        assert normalized["main_contributions"] == []
+
+    def test_normalize_creates_valid_analysis_object(self, analyzer_agent_for_normalization):
+        """Test that normalized data creates valid Analysis object."""
+        agent = analyzer_agent_for_normalization
+
+        # Extreme malformed data
+        malformed_data = {
+            "methodology": "Test",
+            "key_findings": [[], "Finding", None, [["Nested"]]],
+            "conclusions": "Test",
+            "limitations": "Single string",
+            "main_contributions": [123, None, "Valid"],
+            "citations": ["Citation", [], "", None]
+        }
+
+        normalized = agent._normalize_analysis_response(malformed_data)
+
+        # Should successfully create Analysis object without Pydantic errors
+        analysis = Analysis(
+            paper_id="test_id",
+            methodology=normalized["methodology"],
+            key_findings=normalized["key_findings"],
+            conclusions=normalized["conclusions"],
+            limitations=normalized["limitations"],
+            citations=normalized["citations"],
+            main_contributions=normalized["main_contributions"],
+            confidence_score=0.8
+        )
+
+        assert isinstance(analysis, Analysis)
+        assert analysis.key_findings == ["Finding", "Nested"]
+        assert analysis.limitations == ["Single string"]
+        assert analysis.main_contributions == ["123", "Valid"]
+        assert analysis.citations == ["Citation"]
+
+
 class TestAnalyzerAgentIntegration:
     """Integration tests for analyzer agent with more realistic scenarios."""
 
