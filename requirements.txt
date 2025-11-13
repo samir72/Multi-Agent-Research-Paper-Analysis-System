@@ -14,7 +14,7 @@ arxiv>=2.0.0
 pypdf>=3.0.0
 pydantic>=2.0.0
 
-# MCP (Model Context Protocol)
+# MCP (Model Context Protocol) # force a build to get latest fixes
 mcp>=0.9.0
 arxiv-mcp-server>=0.1.0
 nest-asyncio>=1.5.0
