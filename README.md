@@ -139,8 +139,17 @@ cd Multi-Agent-Research-Paper-Analysis-System
 
 2. Install dependencies:
 ```bash
+# Option 1: Standard installation
 pip install -r requirements.txt
+
+# Option 2: Using installation script (recommended for handling MCP conflicts)
+./install_dependencies.sh
+
+# Option 3: With constraints file (enforces MCP version)
+pip install -c constraints.txt -r requirements.txt
 ```
+
+**Note on MCP Dependencies**: The `spaces` package (from Gradio) may attempt to downgrade `mcp` to version 1.10.1, which conflicts with `fastmcp` requirements (mcp>=1.17.0). The app automatically fixes this on Hugging Face Spaces. For local development, use Option 2 or 3 if you encounter MCP dependency conflicts.
 
 3. Configure environment variables:
 ```bash
@@ -264,12 +273,17 @@ The application will be available at `http://localhost:7860`
 
 ```
 Multi-Agent-Research-Paper-Analysis-System/
-├── app.py                          # Main Gradio application with streaming workflow
-├── requirements.txt                # Python dependencies
+├── app.py                          # Main Gradio application with streaming workflow (includes HF MCP fix)
+├── requirements.txt                # Python dependencies with pinned mcp version
+├── pre-requirements.txt            # Pre-installation dependencies (pip, setuptools, wheel)
+├── constraints.txt                 # MCP version constraints file
+├── install_dependencies.sh         # Installation script handling MCP conflicts
+├── huggingface_startup.sh          # HF Spaces startup script with MCP fix
 ├── README.md                       # This file - full documentation
+├── README_INSTALL.md               # Installation troubleshooting guide
 ├── QUICKSTART.md                   # Quick setup guide (5 minutes)
 ├── .env.example                    # Environment variable template
-├── .gitignore                      # Git ignore rules
+├── .gitignore                      # Git ignore rules (excludes data/ directory)
 ├── agents/
 │   ├── __init__.py
 │   ├── retriever.py               # Paper retrieval & chunking
@@ -516,8 +530,10 @@ This repository includes a GitHub Actions workflow that automatically syncs to H
 **Features:**
 - ✅ Auto-deploys to Hugging Face Space on every push to main
 - ✅ Manual trigger available via `workflow_dispatch`
-- ✅ Includes Git LFS support for large files
+- ✅ Shallow clone strategy to avoid large file history
+- ✅ Orphan branch deployment (clean git history without historical PDFs)
 - ✅ Force pushes to keep Space in sync with GitHub
+- ✅ Automatic MCP dependency fix on startup
 
 **Setup Instructions:**
 
@@ -526,12 +542,17 @@ This repository includes a GitHub Actions workflow that automatically syncs to H
 3. Add the token as a GitHub secret:
    - Go to your GitHub repository → Settings → Secrets and variables → Actions
    - Add a new secret named `HF_TOKEN` with your Hugging Face token
-4. Update the workflow file with your Hugging Face username and space name (line 31)
+4. Update the workflow file with your Hugging Face username and space name (line 40)
 5. Push to main branch - the workflow will automatically deploy!
 
 **Monitoring:**
 - View workflow runs: [Actions tab](https://github.com/samir72/Multi-Agent-Research-Paper-Analysis-System/actions)
 - Workflow status badge shows current deployment status
+
+**Troubleshooting:**
+- **Large file errors**: The workflow uses orphan branches to exclude git history with large PDFs
+- **MCP dependency conflicts**: The app automatically fixes mcp version on HF Spaces startup
+- **Sync failures**: Check GitHub Actions logs for detailed error messages
 
 ### Hugging Face Spaces (Manual Deployment)
 
@@ -641,7 +662,92 @@ For issues, questions, or feature requests, please:
 
 ## Changelog
 
-### Version 2.3 - November 2025 (Latest)
+### Version 2.4 - January 2025 (Latest)
+
+**🚀 Deployment & Infrastructure Improvements:**
+- ✅ **GitHub Actions Optimization** - Enhanced automated deployment workflow
+  - Shallow clone strategy (`fetch-depth: 1`) to avoid fetching large file history
+  - Orphan branch deployment to exclude historical PDFs from git history
+  - Resolves "files larger than 10 MiB" errors when pushing to Hugging Face
+  - Clean repository state on HF without historical baggage
+  - Improved workflow reliability and sync speed
+- ✅ **Automatic MCP Dependency Fix** - Zero-config resolution for HF Spaces
+  - Detects Hugging Face environment via `SPACE_ID` env variable
+  - Auto-reinstalls `mcp==1.17.0` on startup before other imports
+  - Resolves conflict where `spaces` package downgrades mcp to 1.10.1
+  - Silent operation with graceful error handling
+  - Only runs on HF Spaces, not locally
+- ✅ **Enhanced Dependency Management** - Multiple installation options
+  - New `install_dependencies.sh` script for robust local installation
+  - New `constraints.txt` file to enforce MCP version across all packages
+  - New `pre-requirements.txt` for pip/setuptools/wheel bootstrapping
+  - New `README_INSTALL.md` with troubleshooting guidance
+  - Three installation methods to handle different environments
+- ✅ **Data Directory Management** - Improved .gitignore
+  - Entire `data/` directory now excluded from version control
+  - Prevents accidental commits of large PDF files
+  - Removed 29 historical PDF files from repository
+  - Cleaner repository with smaller clone size
+  - No impact on local development (data files preserved locally)
+- ✅ **HuggingFace Startup Script** - Alternative deployment method
+  - New `huggingface_startup.sh` for manual MCP fix if needed
+  - Post-install hook support for custom deployments
+  - Comprehensive inline documentation
+
+**📦 Repository Cleanup:**
+- ✅ **Git History Cleanup** - Removed large files from tracking
+  - 26 papers from `data/mcp_papers/`
+  - 2 papers from `data/test_integration_papers/`
+  - 1 paper from `data/test_mcp_papers/`
+  - Simplified .gitignore rules (`data/papers/*.pdf` + specific dirs → `data/`)
+- ✅ **Workflow File Updates** - Improved comments and configuration
+  - Better documentation of GitHub Actions steps
+  - Clearer error messages and troubleshooting hints
+  - Updated README with deployment troubleshooting section
+
+**🐛 Dependency Conflict Resolution:**
+- ✅ **MCP Version Pinning** - Prevents downgrade issues
+  - Pinned `mcp==1.17.0` (exact version) in requirements.txt
+  - Position-based dependency ordering (mcp before fastmcp)
+  - Comprehensive comments explaining the conflict and resolution
+  - Multiple resolution strategies for different deployment scenarios
+- ✅ **Spaces Package Conflict** - Documented and mitigated
+  - Identified `spaces-0.42.1` (from Gradio) as source of mcp downgrade
+  - Automatic fix in app.py prevents runtime issues
+  - Installation scripts handle conflict at install time
+  - Constraints file enforces correct version across all packages
+
+**📚 Documentation Updates:**
+- ✅ **README.md** - Enhanced with deployment and installation sections
+  - New troubleshooting section for GitHub Actions deployment
+  - Expanded installation instructions with 3 methods
+  - Updated project structure with new files
+  - Deployment section now includes HF-specific fixes
+- ✅ **README_INSTALL.md** - New installation troubleshooting guide
+  - Explains MCP dependency conflict
+  - Documents all installation methods
+  - HuggingFace-specific deployment instructions
+- ✅ **Inline Documentation** - Improved code comments
+  - app.py includes detailed comments on MCP fix
+  - Workflow file has enhanced step descriptions
+  - Shell scripts include usage instructions
+
+**🏗️ Architecture Benefits:**
+- ✅ **Automated Deployment** - Push to main → auto-deploy to HF Spaces
+  - No manual intervention required
+  - Handles all dependency conflicts automatically
+  - Clean git history on HF without large files
+- ✅ **Multiple Installation Paths** - Flexible for different environments
+  - Simple: `pip install -r requirements.txt` (works most of the time)
+  - Robust: `./install_dependencies.sh` (handles all edge cases)
+  - Constrained: `pip install -c constraints.txt -r requirements.txt` (enforces versions)
+- ✅ **Zero Breaking Changes** - Complete backward compatibility
+  - Existing local installations continue to work
+  - HF Spaces auto-update with fixes
+  - No code changes required for end users
+  - All features from v2.3 preserved
+
+### Version 2.3 - November 2025
 
 **🚀 FastMCP Architecture Refactor:**
 - ✅ **Auto-Start FastMCP Server** - No manual MCP server setup required
@@ -901,17 +1007,21 @@ For issues, questions, or feature requests, please:
 - ✅ Added QUICKSTART.md for quick setup
 
 ### Completed Features (Recent)
-- [x] FastMCP architecture with auto-start server ✨ NEW
-- [x] Intelligent cascading fallback (MCP → Direct API) ✨ NEW
-- [x] Multi-layer data validation (Pydantic + MCP + PDF processor + Retriever) ✨ NEW
-- [x] 38 comprehensive FastMCP tests ✨ NEW
-- [x] Data validation test suite ✨ NEW
-- [x] MCP (Model Context Protocol) integration with arXiv
-- [x] MCP diagnostic tools and comprehensive testing
-- [x] Automatic fallback mechanism for reliable downloads
-- [x] Configurable pricing system
-- [x] Progressive UI with streaming results
-- [x] Smart quality filtering (0% confidence exclusion)
+- [x] Automated HuggingFace deployment with orphan branch strategy ✨ NEW (v2.4)
+- [x] Automatic MCP dependency conflict resolution on HF Spaces ✨ NEW (v2.4)
+- [x] Multiple installation methods with dependency management ✨ NEW (v2.4)
+- [x] Complete data directory exclusion from git ✨ NEW (v2.4)
+- [x] FastMCP architecture with auto-start server (v2.3)
+- [x] Intelligent cascading fallback (MCP → Direct API) (v2.3)
+- [x] Multi-layer data validation (Pydantic + MCP + PDF processor + Retriever) (v2.3)
+- [x] 38 comprehensive FastMCP tests (v2.3)
+- [x] Data validation test suite (v2.3)
+- [x] MCP (Model Context Protocol) integration with arXiv (v2.2)
+- [x] MCP diagnostic tools and comprehensive testing (v2.2)
+- [x] Automatic fallback mechanism for reliable downloads (v2.2)
+- [x] Configurable pricing system (v2.1)
+- [x] Progressive UI with streaming results (v2.1)
+- [x] Smart quality filtering (0% confidence exclusion) (v2.1)
 
 ### Coming Soon
 - [ ] Tests for Retriever, Synthesis, and Citation agents
