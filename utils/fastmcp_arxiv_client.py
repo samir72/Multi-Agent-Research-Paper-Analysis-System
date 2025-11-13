@@ -22,7 +22,7 @@ try:
     FASTMCP_AVAILABLE = True
 except ImportError:
     FASTMCP_AVAILABLE = False
-    logging.warning("FastMCP not available. Install with: pip install fastmcp")
+    logging.warning("FastMCPClient not available. Install with: pip install fastmcp")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,7 +49,7 @@ class FastMCPArxivClient:
             server_port: FastMCP server port
         """
         if not FASTMCP_AVAILABLE:
-            raise ImportError("FastMCP not installed. Run: pip install fastmcp")
+            raise ImportError("FastMCPClient not installed. Run: pip install fastmcp")
 
         self.storage_path = Path(storage_path or os.getenv("MCP_ARXIV_STORAGE_PATH", "data/mcp_papers"))
         self.storage_path.mkdir(parents=True, exist_ok=True)
