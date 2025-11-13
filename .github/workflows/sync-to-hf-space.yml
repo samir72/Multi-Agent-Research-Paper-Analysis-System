@@ -11,27 +11,36 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          lfs: true  # include large files if any
+          lfs: true
 
       - name: Push to Hugging Face Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          # Fail fast if any prompt would appear
+          # Fail loudly and show each command
+          set -euxo pipefail
+
+          # Configure git
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Actions"
           git config --global credential.helper ""
           export GIT_TERMINAL_PROMPT=0
 
-          # Add/replace remote with username + token + .git suffix
-          git remote remove hf 2>/dev/null || true
-          git remote add hf "https://samir72:${HF_TOKEN}@huggingface.co/spaces/samir72/Multi-Agent-Research-Paper-Analysis-System.git"
+          echo "Current branch:"
+          git branch --show-current || true
 
-          # Optional: verify auth without pushing
+          echo "Git remotes:"
+          git remote -v
+
+          # Add/replace remote with token auth (note 'user' here)
+          git remote remove hf 2>/dev/null || true
+          git remote add hf "https://user:${HF_TOKEN}@huggingface.co/spaces/samir72/Multi-Agent-Research-Paper-Analysis-System"
+
+          echo "Testing authentication with git ls-remote..."
           git ls-remote hf
 
-          # Push main to the Space
-          git push --force hf main
+          echo "Pushing HEAD to main on HF Space..."
+          git push --force hf HEAD:main
