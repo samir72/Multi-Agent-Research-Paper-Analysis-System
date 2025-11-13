@@ -131,22 +131,48 @@ class PDFProcessor:
             # Extract section if possible (simple heuristic)
             section = self._extract_section(chunk_text)
 
-            # Create chunk
-            chunk = PaperChunk(
-                chunk_id=self._generate_chunk_id(paper.arxiv_id, chunk_index),
-                paper_id=paper.arxiv_id,
-                content=chunk_text.strip(),
-                section=section,
-                page_number=page_number,
-                arxiv_url=paper.pdf_url,
-                metadata={
-                    "title": paper.title,
-                    "authors": paper.authors,
+            # Create metadata with type validation
+            try:
+                # Ensure authors is a list of strings
+                authors_metadata = paper.authors
+                if not isinstance(authors_metadata, list):
+                    logger.warning(f"Paper {paper.arxiv_id} has invalid authors type: {type(authors_metadata)}, converting to list")
+                    authors_metadata = [str(authors_metadata)] if authors_metadata else []
+
+                # Ensure title is a string
+                title_metadata = str(paper.title) if paper.title else ""
+
+                metadata = {
+                    "title": title_metadata,
+                    "authors": authors_metadata,
                     "chunk_index": chunk_index,
                     "token_count": len(chunk_tokens)
                 }
-            )
-            chunks.append(chunk)
+            except Exception as e:
+                logger.warning(f"Error creating metadata for chunk {chunk_index}: {str(e)}, using fallback")
+                metadata = {
+                    "title": str(paper.title) if hasattr(paper, 'title') else "",
+                    "authors": [],
+                    "chunk_index": chunk_index,
+                    "token_count": len(chunk_tokens)
+                }
+
+            # Create chunk with validated data
+            try:
+                chunk = PaperChunk(
+                    chunk_id=self._generate_chunk_id(paper.arxiv_id, chunk_index),
+                    paper_id=paper.arxiv_id,
+                    content=chunk_text.strip(),
+                    section=section,
+                    page_number=page_number,
+                    arxiv_url=str(paper.pdf_url) if paper.pdf_url else "",
+                    metadata=metadata
+                )
+                chunks.append(chunk)
+            except Exception as e:
+                logger.error(f"Error creating chunk {chunk_index} for paper {paper.arxiv_id}: {str(e)}")
+                # Continue processing other chunks rather than failing completely
+                continue
 
             # Move to next chunk with overlap
             start_idx += self.chunk_size - self.chunk_overlap

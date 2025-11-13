@@ -30,13 +30,21 @@ from utils.pdf_processor import PDFProcessor
 from utils.cache import SemanticCache
 from utils.schemas import AgentState
 
-# Import MCP client if available
+# Import MCP clients if available
 try:
     from utils.mcp_arxiv_client import MCPArxivClient
-    MCP_AVAILABLE = True
+    LEGACY_MCP_AVAILABLE = True
 except ImportError:
-    MCP_AVAILABLE = False
-    logger.warning("MCP client not available - falling back to direct arXiv API")
+    LEGACY_MCP_AVAILABLE = False
+    logger.warning("Legacy MCP client not available")
+
+try:
+    from utils.fastmcp_arxiv_client import FastMCPArxivClient
+    from utils.fastmcp_arxiv_server import get_server, shutdown_server
+    FASTMCP_AVAILABLE = True
+except ImportError:
+    FASTMCP_AVAILABLE = False
+    logger.warning("FastMCP not available - install with: pip install fastmcp")
 
 # Import RAG components
 from rag.embeddings import EmbeddingGenerator
@@ -58,18 +66,73 @@ class ResearchPaperAnalyzer:
         """Initialize the analyzer with all components."""
         logger.info("Initializing Research Paper Analyzer...")
 
-        # Initialize arXiv client (MCP or direct API)
+        # Configuration
+        storage_path = os.getenv("MCP_ARXIV_STORAGE_PATH", "data/mcp_papers")
+        server_port = int(os.getenv("FASTMCP_SERVER_PORT", "5555"))
         use_mcp = os.getenv("USE_MCP_ARXIV", "false").lower() == "true"
-        if use_mcp and MCP_AVAILABLE:
-            logger.info("Using MCP arXiv client")
-            storage_path = os.getenv("MCP_ARXIV_STORAGE_PATH", "data/mcp_papers")
-            self.arxiv_client = MCPArxivClient(storage_path=storage_path)
-        else:
-            if use_mcp and not MCP_AVAILABLE:
-                logger.warning("MCP requested but not available - using direct arXiv API")
+        use_legacy_mcp = os.getenv("USE_LEGACY_MCP", "false").lower() == "true"
+
+        # Initialize arXiv clients with intelligent selection
+        self.fastmcp_server = None
+        primary_client = None
+        fallback_client = None
+
+        if use_mcp:
+            if use_legacy_mcp and LEGACY_MCP_AVAILABLE:
+                # Use legacy MCP as primary
+                logger.info("Using legacy MCP arXiv client (USE_LEGACY_MCP=true)")
+                primary_client = MCPArxivClient(storage_path=storage_path)
+                fallback_client = ArxivClient()  # Direct API as fallback
+            elif FASTMCP_AVAILABLE:
+                # Use FastMCP as primary (default MCP mode)
+                logger.info("Using FastMCP arXiv client (default MCP mode)")
+
+                # Start FastMCP server with auto-start
+                try:
+                    self.fastmcp_server = get_server(
+                        storage_path=storage_path,
+                        server_port=server_port,
+                        auto_start=True
+                    )
+                    logger.info(f"FastMCP server started on port {server_port}")
+
+                    # Create FastMCP client
+                    primary_client = FastMCPArxivClient(
+                        storage_path=storage_path,
+                        server_host="localhost",
+                        server_port=server_port
+                    )
+                    fallback_client = ArxivClient()  # Direct API as fallback
+
+                except Exception as e:
+                    logger.error(f"Failed to start FastMCP: {str(e)}")
+                    logger.warning("Falling back to legacy MCP or direct API")
+
+                    if LEGACY_MCP_AVAILABLE:
+                        logger.info("Using legacy MCP as fallback")
+                        primary_client = MCPArxivClient(storage_path=storage_path)
+                    else:
+                        logger.info("Using direct arXiv API")
+                        primary_client = ArxivClient()
+                    fallback_client = None
+            elif LEGACY_MCP_AVAILABLE:
+                # FastMCP not available, use legacy MCP
+                logger.warning("FastMCP not available, using legacy MCP")
+                primary_client = MCPArxivClient(storage_path=storage_path)
+                fallback_client = ArxivClient()
             else:
-                logger.info("Using direct arXiv API client")
-            self.arxiv_client = ArxivClient()
+                # No MCP available
+                logger.warning("MCP requested but not available - using direct arXiv API")
+                primary_client = ArxivClient()
+                fallback_client = None
+        else:
+            # Direct API mode (default)
+            logger.info("Using direct arXiv API client (USE_MCP_ARXIV=false)")
+            primary_client = ArxivClient()
+            fallback_client = None
+
+        # Store primary client for reference
+        self.arxiv_client = primary_client
 
         # Initialize other components
         self.pdf_processor = PDFProcessor()
@@ -81,18 +144,28 @@ class ResearchPaperAnalyzer:
         )
         self.cache = SemanticCache()
 
-        # Initialize agents
+        # Initialize agents with fallback support
         self.retriever_agent = RetrieverAgent(
-            arxiv_client=self.arxiv_client,
+            arxiv_client=primary_client,
             pdf_processor=self.pdf_processor,
             vector_store=self.vector_store,
-            embedding_generator=self.embedding_generator
+            embedding_generator=self.embedding_generator,
+            fallback_client=fallback_client  # Enable fallback
         )
         self.analyzer_agent = AnalyzerAgent(rag_retriever=self.rag_retriever)
         self.synthesis_agent = SynthesisAgent(rag_retriever=self.rag_retriever)
         self.citation_agent = CitationAgent(rag_retriever=self.rag_retriever)
 
         logger.info("Initialization complete")
+
+    def __del__(self):
+        """Cleanup on deletion."""
+        try:
+            if self.fastmcp_server:
+                logger.info("Shutting down FastMCP server")
+                shutdown_server()
+        except Exception as e:
+            logger.warning(f"Error during cleanup: {str(e)}")
 
     def _retriever_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """

@@ -1,10 +1,9 @@
 """
-arXiv MCP client wrapper for accessing arXiv papers via Model Context Protocol.
-Uses in-process handler calls instead of subprocess stdio protocol.
+FastMCP client for accessing arXiv papers via FastMCP protocol.
+Implements same interface as ArxivClient for drop-in compatibility.
 """
 import os
 import logging
-import sys
 from typing import List, Optional, Any, Dict
 from pathlib import Path
 from datetime import datetime
@@ -17,8 +16,13 @@ import urllib.error
 
 from utils.schemas import Paper
 
-# MCP handlers will be imported lazily in __init__ after configuring sys.argv
-# This ensures the Settings class reads the correct storage path
+# Import FastMCP client
+try:
+    from fastmcp import Client
+    FASTMCP_AVAILABLE = True
+except ImportError:
+    FASTMCP_AVAILABLE = False
+    logging.warning("FastMCP not available. Install with: pip install fastmcp")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,154 +31,42 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class MCPArxivClient:
-    """Wrapper for arXiv MCP server using direct in-process handler calls."""
+class FastMCPArxivClient:
+    """FastMCP client for arXiv operations with ArxivClient-compatible interface."""
 
-    # Class-level handlers (imported once)
-    _handlers_imported = False
-    handle_search = None
-    handle_download = None
-    handle_list_papers = None
-
-    @classmethod
-    def _import_handlers(cls):
-        """Import MCP handlers once at class level."""
-        if not cls._handlers_imported:
-            from arxiv_mcp_server.tools import handle_search, handle_download, handle_list_papers
-            cls.handle_search = handle_search
-            cls.handle_download = handle_download
-            cls.handle_list_papers = handle_list_papers
-            cls._handlers_imported = True
-
-    def __init__(self, storage_path: Optional[str] = None):
+    def __init__(
+        self,
+        storage_path: Optional[str] = None,
+        server_host: str = "localhost",
+        server_port: int = 5555
+    ):
         """
-        Initialize MCP arXiv client with in-process handlers.
+        Initialize FastMCP arXiv client.
 
         Args:
-            storage_path: Path where papers are stored (reads from env if not provided)
+            storage_path: Path where papers are stored (for local file access)
+            server_host: FastMCP server host
+            server_port: FastMCP server port
         """
+        if not FASTMCP_AVAILABLE:
+            raise ImportError("FastMCP not installed. Run: pip install fastmcp")
+
         self.storage_path = Path(storage_path or os.getenv("MCP_ARXIV_STORAGE_PATH", "data/mcp_papers"))
         self.storage_path.mkdir(parents=True, exist_ok=True)
 
-        # Set sys.argv BEFORE importing handlers (first time only)
-        self._original_argv = sys.argv.copy()
-        if not self._handlers_imported:
-            # Only set on first initialization
-            if "--storage-path" not in sys.argv:
-                sys.argv.extend(["--storage-path", str(self.storage_path.resolve())])
-                logger.debug(f"Set sys.argv storage path: {self.storage_path.resolve()}")
+        self.server_host = server_host
+        self.server_port = server_port
+        # FastMCP SSE server uses /sse endpoint by default
+        self.server_url = f"http://{server_host}:{server_port}/sse"
 
-        # Import handlers (only happens once)
-        self._import_handlers()
-
-        # Import settings AFTER handlers to get configured instance
-        from arxiv_mcp_server.config import Settings as MCPSettings
-        import arxiv_mcp_server.tools.download as download_module
-
-        # Update the module-level settings in download.py to use our storage path
-        # This is a workaround since Settings is instantiated at module load time
-        if hasattr(download_module, 'settings'):
-            # Monkey-patch the storage path for this instance
-            logger.debug(f"Updating download module settings storage path")
-
-        logger.info(f"MCPArxivClient initialized with in-process handlers")
-        logger.info(f"Storage path: {self.storage_path.resolve()}")
-
-        # Log existing files in storage
-        existing_files = list(self.storage_path.glob("*.pdf"))
-        logger.info(f"Storage directory contains {len(existing_files)} existing PDF files")
-
-    async def _call_handler_async(self, handler_func, arguments: Dict[str, Any], handler_name: str) -> Any:
-        """
-        Call an MCP handler function directly and return parsed result.
-
-        Args:
-            handler_func: The async handler function to call
-            arguments: Handler arguments as dictionary
-            handler_name: Name of handler (for logging)
-
-        Returns:
-            Parsed handler result (dict or list)
-
-        Raises:
-            Exception: If handler call fails
-        """
-        try:
-            logger.debug(f"Calling {handler_name} with arguments: {arguments}")
-
-            # Call the handler directly (returns List[types.TextContent])
-            result = await handler_func(arguments)
-
-            # Extract text from TextContent objects
-            if result and len(result) > 0:
-                text_content = result[0].text
-                logger.debug(f"Raw {handler_name} response: {text_content[:200]}...")
-
-                # Parse JSON response
-                try:
-                    parsed_data = json.loads(text_content)
-                    logger.debug(f"Parsed {handler_name} response type: {type(parsed_data)}")
-
-                    # Check for errors in response
-                    if isinstance(parsed_data, dict) and "error" in parsed_data:
-                        logger.error(f"{handler_name} returned error: {parsed_data['error']}")
-
-                    return parsed_data
-                except json.JSONDecodeError:
-                    logger.warning(f"Could not parse {handler_name} response as JSON: {text_content[:200]}")
-                    return text_content
-            else:
-                logger.warning(f"{handler_name} returned empty result")
-                return {}
-
-        except Exception as e:
-            logger.error(f"Error calling {handler_name}: {str(e)}")
-            raise
-
-    def _download_from_arxiv_direct(self, paper: Paper) -> Optional[Path]:
-        """
-        Fallback method to download PDF directly from arXiv.
-        Used when MCP server download fails or file is not accessible.
-
-        Args:
-            paper: Paper object
-
-        Returns:
-            Path to downloaded PDF, or None if download fails
-        """
-        try:
-            pdf_path = self.storage_path / f"{paper.arxiv_id}.pdf"
-
-            logger.info(f"Attempting direct download from arXiv for {paper.arxiv_id}")
-            logger.debug(f"PDF URL: {paper.pdf_url}")
-
-            # Download with urllib
-            headers = {'User-Agent': 'Mozilla/5.0 (Research Paper Analysis System)'}
-            request = urllib.request.Request(paper.pdf_url, headers=headers)
-
-            with urllib.request.urlopen(request, timeout=30) as response:
-                pdf_content = response.read()
-
-            # Write to storage
-            pdf_path.write_bytes(pdf_content)
-            logger.info(f"Successfully downloaded {len(pdf_content)} bytes to {pdf_path}")
-
-            return pdf_path
-
-        except urllib.error.HTTPError as e:
-            logger.error(f"HTTP error downloading from arXiv: {e.code} {e.reason}")
-            return None
-        except urllib.error.URLError as e:
-            logger.error(f"URL error downloading from arXiv: {str(e)}")
-            return None
-        except Exception as e:
-            logger.error(f"Unexpected error in direct arXiv download: {str(e)}", exc_info=True)
-            return None
-
+        logger.info(f"FastMCPArxivClient initialized")
+        logger.info(f"Storage path: {self.storage_path}")
+        logger.info(f"Server: {self.server_url}")
 
     def _parse_mcp_paper(self, paper_data: Dict[str, Any]) -> Paper:
         """
         Convert MCP tool response to Paper object with robust type validation.
+        Reused from legacy MCP client for consistency.
 
         Args:
             paper_data: Paper data from MCP tool
@@ -187,7 +79,6 @@ class MCPArxivClient:
         """
         try:
             # MCP server returns papers with these fields
-            # Handle potential variations in response format
             arxiv_id = paper_data.get("id") or paper_data.get("arxiv_id", "")
             if not arxiv_id:
                 raise ValueError("Missing required field: arxiv_id")
@@ -206,13 +97,11 @@ class MCPArxivClient:
                 logger.warning(f"Published field has unexpected type: {type(published_str)}, using current time")
                 published = datetime.now()
 
-            # Normalize authors field - handle various formats
+            # Normalize authors field
             authors_raw = paper_data.get("authors", [])
             if isinstance(authors_raw, list):
-                # Ensure all elements are strings
                 authors = [str(author) if not isinstance(author, str) else author for author in authors_raw]
             elif isinstance(authors_raw, dict):
-                # Dict format - log warning and extract
                 logger.warning(f"Authors field is dict for paper {arxiv_id}: {authors_raw}")
                 if 'names' in authors_raw:
                     authors = authors_raw['names'] if isinstance(authors_raw['names'], list) else [str(authors_raw['names'])]
@@ -224,13 +113,11 @@ class MCPArxivClient:
                 logger.warning(f"Unexpected authors format for paper {arxiv_id}: {type(authors_raw)}")
                 authors = []
 
-            # Normalize categories field - handle various formats
+            # Normalize categories field
             categories_raw = paper_data.get("categories", [])
             if isinstance(categories_raw, list):
-                # Ensure all elements are strings
                 categories = [str(cat) if not isinstance(cat, str) else cat for cat in categories_raw]
             elif isinstance(categories_raw, dict):
-                # Dict format - log warning and extract
                 logger.warning(f"Categories field is dict for paper {arxiv_id}: {categories_raw}")
                 if 'categories' in categories_raw:
                     categories = categories_raw['categories'] if isinstance(categories_raw['categories'], list) else [str(categories_raw['categories'])]
@@ -269,8 +156,7 @@ class MCPArxivClient:
             else:
                 pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
 
-            # Create Paper object with normalized data
-            # Pydantic validators will provide additional validation
+            # Create Paper object (Pydantic validators provide additional validation)
             paper = Paper(
                 arxiv_id=arxiv_id,
                 title=title,
@@ -289,6 +175,46 @@ class MCPArxivClient:
             logger.error(f"Raw paper data: {paper_data}")
             raise
 
+    def _download_from_arxiv_direct(self, paper: Paper) -> Optional[Path]:
+        """
+        Fallback method to download PDF directly from arXiv.
+        Used when FastMCP server fails.
+
+        Args:
+            paper: Paper object
+
+        Returns:
+            Path to downloaded PDF, or None if download fails
+        """
+        try:
+            pdf_path = self.storage_path / f"{paper.arxiv_id}.pdf"
+
+            logger.info(f"Attempting direct download from arXiv for {paper.arxiv_id}")
+            logger.debug(f"PDF URL: {paper.pdf_url}")
+
+            # Download with urllib
+            headers = {'User-Agent': 'Mozilla/5.0 (Research Paper Analysis System)'}
+            request = urllib.request.Request(paper.pdf_url, headers=headers)
+
+            with urllib.request.urlopen(request, timeout=30) as response:
+                pdf_content = response.read()
+
+            # Write to storage
+            pdf_path.write_bytes(pdf_content)
+            logger.info(f"Successfully downloaded {len(pdf_content)} bytes to {pdf_path}")
+
+            return pdf_path
+
+        except urllib.error.HTTPError as e:
+            logger.error(f"HTTP error downloading from arXiv: {e.code} {e.reason}")
+            return None
+        except urllib.error.URLError as e:
+            logger.error(f"URL error downloading from arXiv: {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error in direct arXiv download: {str(e)}", exc_info=True)
+            return None
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10)
@@ -301,7 +227,7 @@ class MCPArxivClient:
         sort_by: str = "relevance"
     ) -> List[Paper]:
         """
-        Search for papers on arXiv using direct MCP handler calls.
+        Search for papers on arXiv using FastMCP.
 
         Args:
             query: Search query
@@ -313,35 +239,45 @@ class MCPArxivClient:
             List of Paper objects
 
         Raises:
-            Exception: If handler call fails after retries
+            Exception: If FastMCP call fails after retries
         """
         try:
-            logger.info(f"Searching arXiv via MCP for: {query}")
+            logger.info(f"Searching arXiv via FastMCP for: {query}")
 
-            # Prepare handler arguments
-            search_args = {
+            # Prepare tool arguments
+            tool_args = {
                 "query": query,
                 "max_results": max_results,
                 "sort_by": sort_by
             }
 
-            # MCP uses "categories" (plural) instead of "category"
+            # Add category filter if provided
             if category:
-                search_args["categories"] = [category]
+                tool_args["categories"] = [category]
 
-            # Call handle_search directly (it's a module-level async function, not a method)
-            result = await self._call_handler_async(MCPArxivClient.handle_search, search_args, "handle_search")
+            # Call search_papers tool via FastMCP client context manager
+            logger.debug(f"Calling search_papers tool with args: {tool_args}")
+            async with Client(self.server_url) as client:
+                result = await client.call_tool("search_papers", tool_args)
 
-            # Parse results
+            # Parse results - FastMCP returns CallToolResult with data attribute
             papers = []
-            if isinstance(result, dict):
-                paper_list = result.get("papers", [])
-            elif isinstance(result, list):
-                paper_list = result
+            # Extract data from CallToolResult object
+            if hasattr(result, 'data') and result.data:
+                result_data = result.data
             else:
-                logger.warning(f"Unexpected result format: {type(result)}")
+                result_data = result
+
+            # Now parse the actual data
+            if isinstance(result_data, dict):
+                paper_list = result_data.get("papers", [])
+            elif isinstance(result_data, list):
+                paper_list = result_data
+            else:
+                logger.warning(f"Unexpected result format: {type(result_data)}")
                 paper_list = []
 
+            # Parse each paper
             for paper_data in paper_list:
                 try:
                     paper = self._parse_mcp_paper(paper_data)
@@ -350,11 +286,11 @@ class MCPArxivClient:
                     logger.warning(f"Failed to parse paper: {str(e)}")
                     continue
 
-            logger.info(f"Found {len(papers)} papers via MCP")
+            logger.info(f"Found {len(papers)} papers via FastMCP")
             return papers
 
         except Exception as e:
-            logger.error(f"Error searching arXiv via MCP: {str(e)}")
+            logger.error(f"Error searching arXiv via FastMCP: {str(e)}")
             raise
 
     def search_papers(
@@ -376,23 +312,17 @@ class MCPArxivClient:
         Returns:
             List of Paper objects
         """
-        import asyncio
-        import nest_asyncio
-
         # Get or create event loop
         try:
             loop = asyncio.get_event_loop()
-            # Check if loop is closed
             if loop.is_closed():
-                # Create new loop if closed
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
         except RuntimeError:
-            # Create new event loop if none exists
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-        # Enable nested event loops for compatibility
+        # Enable nested event loops for Gradio compatibility
         nest_asyncio.apply(loop)
 
         return loop.run_until_complete(
@@ -405,10 +335,7 @@ class MCPArxivClient:
     )
     async def download_paper_async(self, paper: Paper) -> Optional[Path]:
         """
-        Download paper PDF using direct MCP handler calls.
-
-        The MCP server downloads PDFs and converts to Markdown, but we only need the PDF.
-        With in-process handlers, we can access the PDF directly from storage.
+        Download paper PDF using FastMCP.
 
         Args:
             paper: Paper object
@@ -417,42 +344,42 @@ class MCPArxivClient:
             Path to downloaded PDF, or None if download fails
         """
         try:
-            # Expected path in storage (MCP handler downloads to STORAGE_PATH)
+            # Expected path in storage
             pdf_path = self.storage_path / f"{paper.arxiv_id}.pdf"
 
-            # Check if already exists
+            # Check if already exists locally
             if pdf_path.exists():
                 logger.info(f"Paper {paper.arxiv_id} already in storage")
                 return pdf_path
 
-            logger.info(f"Downloading paper {paper.arxiv_id} via MCP handler")
-            logger.debug(f"Expected download path: {pdf_path}")
+            logger.info(f"Downloading paper {paper.arxiv_id} via FastMCP")
 
-            # Call handle_download directly (it's a module-level async function, not a method)
-            result = await self._call_handler_async(
-                MCPArxivClient.handle_download,
-                {"paper_id": paper.arxiv_id},
-                "handle_download"
-            )
+            # Call download_paper tool via FastMCP client context manager
+            async with Client(self.server_url) as client:
+                result = await client.call_tool("download_paper", {"paper_id": paper.arxiv_id})
 
-            # Log the response for debugging
-            logger.debug(f"MCP download response: {result}")
+            # Extract data from CallToolResult object
+            if hasattr(result, 'data') and result.data:
+                result_data = result.data
+            else:
+                result_data = result
+
+            logger.debug(f"FastMCP download response: {result_data}")
 
             # Check for error in response
-            if isinstance(result, dict):
-                if result.get("status") == "error":
-                    error_msg = result.get("message", "Unknown error")
-                    logger.error(f"MCP download failed for {paper.arxiv_id}: {error_msg}")
+            if isinstance(result_data, dict):
+                if result_data.get("status") == "error":
+                    error_msg = result_data.get("message", "Unknown error")
+                    logger.error(f"FastMCP download failed for {paper.arxiv_id}: {error_msg}")
                     # Fall back to direct download
                     return self._download_from_arxiv_direct(paper)
 
-            # With in-process handlers, the file should be directly accessible
-            # The handler downloads to STORAGE_PATH configured via settings
+            # Check if file exists locally now
             if pdf_path.exists():
                 logger.info(f"Successfully downloaded paper to {pdf_path}")
                 return pdf_path
 
-            # If not at expected path, search storage directory
+            # Search for file in storage
             storage_files = list(self.storage_path.glob("*.pdf"))
             matching_files = [f for f in storage_files if paper.arxiv_id in f.name]
             if matching_files:
@@ -461,12 +388,12 @@ class MCPArxivClient:
                 return found_file
 
             # File not found - fall back to direct download
-            logger.warning(f"MCP download completed but PDF not found for {paper.arxiv_id}")
+            logger.warning(f"FastMCP download completed but PDF not found for {paper.arxiv_id}")
             logger.warning("Falling back to direct arXiv download...")
             return self._download_from_arxiv_direct(paper)
 
         except Exception as e:
-            logger.error(f"Error downloading paper {paper.arxiv_id} via MCP: {str(e)}", exc_info=True)
+            logger.error(f"Error downloading paper {paper.arxiv_id} via FastMCP: {str(e)}", exc_info=True)
             logger.warning("Attempting direct arXiv download as fallback...")
             return self._download_from_arxiv_direct(paper)
 
@@ -480,23 +407,17 @@ class MCPArxivClient:
         Returns:
             Path to downloaded PDF
         """
-        import asyncio
-        import nest_asyncio
-
         # Get or create event loop
         try:
             loop = asyncio.get_event_loop()
-            # Check if loop is closed
             if loop.is_closed():
-                # Create new loop if closed
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
         except RuntimeError:
-            # Create new event loop if none exists
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-        # Enable nested event loops for compatibility
+        # Enable nested event loops for Gradio compatibility
         nest_asyncio.apply(loop)
 
         return loop.run_until_complete(self.download_paper_async(paper))
@@ -520,20 +441,27 @@ class MCPArxivClient:
 
     async def get_cached_papers_async(self) -> List[Path]:
         """
-        Get list of cached paper PDFs using direct MCP handler calls.
+        Get list of cached paper PDFs using FastMCP.
 
         Returns:
             List of Paths to cached PDFs
         """
         try:
-            # Call handle_list_papers directly (it's a module-level async function, not a method)
-            result = await self._call_handler_async(MCPArxivClient.handle_list_papers, {}, "handle_list_papers")
+            # Call list_papers tool via FastMCP client context manager
+            async with Client(self.server_url) as client:
+                result = await client.call_tool("list_papers", {})
 
-            # Parse result to get paths
-            if isinstance(result, dict):
-                paper_ids = result.get("papers", [])
-            elif isinstance(result, list):
-                paper_ids = result
+            # Extract data from CallToolResult object
+            if hasattr(result, 'data') and result.data:
+                result_data = result.data
+            else:
+                result_data = result
+
+            # Parse result
+            if isinstance(result_data, dict):
+                paper_ids = result_data.get("papers", [])
+            elif isinstance(result_data, list):
+                paper_ids = result_data
             else:
                 logger.warning("Unexpected format from list_papers")
                 paper_ids = []
@@ -543,8 +471,9 @@ class MCPArxivClient:
                     if (self.storage_path / f"{pid}.pdf").exists()]
 
             return paths
+
         except Exception as e:
-            logger.warning(f"Error listing cached papers via MCP: {str(e)}")
+            logger.warning(f"Error listing cached papers via FastMCP: {str(e)}")
             # Fallback to filesystem listing
             return list(self.storage_path.glob("*.pdf"))
 
@@ -555,31 +484,44 @@ class MCPArxivClient:
         Returns:
             List of Paths to cached PDFs
         """
-        import asyncio
-        import nest_asyncio
-
         # Get or create event loop
         try:
             loop = asyncio.get_event_loop()
-            # Check if loop is closed
             if loop.is_closed():
-                # Create new loop if closed
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
         except RuntimeError:
-            # Create new event loop if none exists
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-        # Enable nested event loops for compatibility
+        # Enable nested event loops for Gradio compatibility
         nest_asyncio.apply(loop)
 
         return loop.run_until_complete(self.get_cached_papers_async())
 
+    async def close_async(self):
+        """
+        Close FastMCP client connection.
+
+        Note: With per-operation context managers, there is no persistent
+        connection to close. Each operation manages its own connection lifecycle.
+        """
+        logger.info("FastMCP client uses per-operation connections - no persistent connection to close")
+
+    def close(self):
+        """
+        Synchronous wrapper for close_async.
+
+        Note: With per-operation context managers, there is no persistent
+        connection to close. Each operation manages its own connection lifecycle.
+        """
+        logger.info("FastMCP client uses per-operation connections - no persistent connection to close")
+
     def __del__(self):
-        """Cleanup on deletion - restore original sys.argv."""
-        try:
-            # Restore original sys.argv to avoid side effects
-            sys.argv = self._original_argv
-        except Exception:
-            pass  # Ignore errors during cleanup
+        """
+        Cleanup on deletion.
+
+        Note: With per-operation context managers, no cleanup is needed.
+        Each operation manages its own connection lifecycle.
+        """
+        pass  # No cleanup needed with per-operation context managers

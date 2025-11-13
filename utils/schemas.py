@@ -2,8 +2,11 @@
 Pydantic schemas for type safety and validation.
 """
 from datetime import datetime
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional, Union
+from pydantic import BaseModel, Field, validator
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class Paper(BaseModel):
@@ -15,6 +18,74 @@ class Paper(BaseModel):
     pdf_url: str = Field(..., description="URL to PDF")
     published: datetime = Field(..., description="Publication date")
     categories: List[str] = Field(default_factory=list, description="arXiv categories")
+
+    @validator('authors', pre=True)
+    def normalize_authors(cls, v):
+        """Ensure authors is always a List[str], handling various input formats."""
+        if isinstance(v, list):
+            # Already a list, ensure all elements are strings
+            return [str(author) if not isinstance(author, str) else author for author in v]
+        elif isinstance(v, dict):
+            # Dict format - extract values or keys as list
+            logger.warning(f"Authors field is dict, extracting values: {v}")
+            if 'names' in v:
+                return v['names'] if isinstance(v['names'], list) else [str(v['names'])]
+            elif 'authors' in v:
+                return v['authors'] if isinstance(v['authors'], list) else [str(v['authors'])]
+            else:
+                # Extract all values from dict
+                return [str(val) for val in v.values() if val]
+        elif isinstance(v, str):
+            # Single author as string
+            return [v]
+        else:
+            logger.warning(f"Unexpected authors format: {type(v)}, returning empty list")
+            return []
+
+    @validator('categories', pre=True)
+    def normalize_categories(cls, v):
+        """Ensure categories is always a List[str], handling various input formats."""
+        if isinstance(v, list):
+            # Already a list, ensure all elements are strings
+            return [str(cat) if not isinstance(cat, str) else cat for cat in v]
+        elif isinstance(v, dict):
+            # Dict format - extract values or keys as list
+            logger.warning(f"Categories field is dict, extracting values: {v}")
+            if 'categories' in v:
+                return v['categories'] if isinstance(v['categories'], list) else [str(v['categories'])]
+            else:
+                # Extract all values from dict
+                return [str(val) for val in v.values() if val]
+        elif isinstance(v, str):
+            # Single category as string
+            return [v]
+        else:
+            logger.warning(f"Unexpected categories format: {type(v)}, returning empty list")
+            return []
+
+    @validator('pdf_url', pre=True)
+    def normalize_pdf_url(cls, v):
+        """Ensure pdf_url is always a string."""
+        if isinstance(v, dict):
+            logger.warning(f"pdf_url is dict, extracting url value: {v}")
+            return v.get('url') or v.get('pdf_url') or str(v)
+        return str(v) if v else ""
+
+    @validator('title', pre=True)
+    def normalize_title(cls, v):
+        """Ensure title is always a string."""
+        if isinstance(v, dict):
+            logger.warning(f"title is dict, extracting title value: {v}")
+            return v.get('title') or str(v)
+        return str(v) if v else ""
+
+    @validator('abstract', pre=True)
+    def normalize_abstract(cls, v):
+        """Ensure abstract is always a string."""
+        if isinstance(v, dict):
+            logger.warning(f"abstract is dict, extracting abstract value: {v}")
+            return v.get('abstract') or v.get('summary') or str(v)
+        return str(v) if v else ""
 
     class Config:
         json_encoders = {

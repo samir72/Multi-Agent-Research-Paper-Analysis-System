@@ -17,6 +17,47 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _extract_pdf_url(result: arxiv.Result) -> Optional[str]:
+    """
+    Extract PDF URL from arxiv.Result, handling arxiv library v2.2.0 breaking change.
+
+    In arxiv v2.2.0+, pdf_url attribute is always None. PDF URL is now in links field.
+
+    Args:
+        result: arxiv.Result object
+
+    Returns:
+        PDF URL string or None if not found
+    """
+    # Try legacy pdf_url attribute first (backward compatibility)
+    if result.pdf_url:
+        return result.pdf_url
+
+    # arxiv v2.2.0+: PDF URL is in links
+    # Links typically have format:
+    #   [0] abs URL (alternate)
+    #   [1] pdf URL (alternate)
+    #   [2] DOI URL (related)
+    try:
+        for link in result.links:
+            if 'pdf' in link.href.lower():
+                logger.debug(f"Extracted PDF URL from links: {link.href}")
+                return link.href
+    except (AttributeError, TypeError) as e:
+        logger.warning(f"Error extracting PDF URL from links: {e}")
+
+    # Fallback: construct URL from entry_id
+    # entry_id format: http://arxiv.org/abs/2102.08370v2
+    try:
+        paper_id = result.entry_id.split('/')[-1]
+        fallback_url = f"https://arxiv.org/pdf/{paper_id}"
+        logger.warning(f"Using fallback PDF URL construction: {fallback_url}")
+        return fallback_url
+    except (AttributeError, IndexError) as e:
+        logger.error(f"Failed to construct fallback PDF URL: {e}")
+        return None
+
+
 class ArxivClient:
     """Wrapper for arXiv API with error handling and caching."""
 
@@ -79,7 +120,7 @@ class ArxivClient:
                     title=result.title,
                     authors=[author.name for author in result.authors],
                     abstract=result.summary,
-                    pdf_url=result.pdf_url,
+                    pdf_url=_extract_pdf_url(result),
                     published=result.published,
                     categories=result.categories
                 )
