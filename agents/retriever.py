@@ -3,7 +3,7 @@ Retriever Agent: Search arXiv, download papers, and chunk for RAG.
 Includes intelligent fallback from MCP/FastMCP to direct arXiv API.
 """
 import logging
-from typing import Dict, Any, Union, Optional, List
+from typing import Dict, Any, Optional, List
 from pathlib import Path
 
 from utils.arxiv_client import ArxivClient

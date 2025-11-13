@@ -37,9 +37,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# LangGraph imports
-from langgraph.graph import StateGraph, END
-
 # Load environment variables
 load_dotenv()
 
@@ -47,7 +44,6 @@ load_dotenv()
 from utils.arxiv_client import ArxivClient
 from utils.pdf_processor import PDFProcessor
 from utils.cache import SemanticCache
-from utils.schemas import AgentState
 
 # Import MCP clients if available
 try:
@@ -199,139 +195,6 @@ class ResearchPaperAnalyzer:
         if "progress" in state:
             state["progress"](0.1, desc="Searching and downloading papers...")
         return self.retriever_agent.run(state)
-
-    def _analyzer_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        LangGraph node for analyzer agent.
-
-        Args:
-            state: Current workflow state
-
-        Returns:
-            Updated state with analyses
-        """
-        if "progress" in state:
-            state["progress"](0.4, desc="Analyzing individual papers...")
-
-        # Skip if no papers retrieved
-        if state.get("errors") and not state.get("papers"):
-            return state
-
-        return self.analyzer_agent.run(state)
-
-    def _filter_low_confidence_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        LangGraph node to filter out analyses with 0% confidence.
-
-        Papers with failed analysis (0% confidence) are excluded from
-        synthesis and citation but remain visible in the Papers tab.
-
-        Args:
-            state: Current workflow state
-
-        Returns:
-            Updated state with filtered analyses and papers
-        """
-        analyses = state.get("analyses", [])
-        papers = state.get("papers", [])
-
-        if not analyses:
-            return state
-
-        # Separate valid and failed analyses
-        valid_pairs = [(p, a) for p, a in zip(papers, analyses) if a.confidence_score > 0.0]
-        failed_pairs = [(p, a) for p, a in zip(papers, analyses) if a.confidence_score == 0.0]
-
-        if failed_pairs:
-            failed_count = len(failed_pairs)
-            failed_titles = [p.title[:50] + "..." if len(p.title) > 50 else p.title for p, _ in failed_pairs]
-            logger.warning(f"Filtering out {failed_count} paper(s) with 0% confidence: {failed_titles}")
-            state["errors"].append(
-                f"Excluded {failed_count} paper(s) with failed analysis from synthesis and citations"
-            )
-
-        # Update state with filtered data (but keep original papers list for Papers tab)
-        if valid_pairs:
-            # Store filtered papers and analyses for synthesis/citation
-            state["filtered_papers"] = [p for p, _ in valid_pairs]
-            state["filtered_analyses"] = [a for _, a in valid_pairs]
-        else:
-            # All analyses failed
-            state["filtered_papers"] = []
-            state["filtered_analyses"] = []
-            logger.error("All paper analyses failed (0% confidence)")
-            state["errors"].append("All paper analyses failed - cannot generate synthesis")
-
-        return state
-
-    def _synthesis_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        LangGraph node for synthesis agent.
-
-        Args:
-            state: Current workflow state
-
-        Returns:
-            Updated state with synthesis
-        """
-        if "progress" in state:
-            state["progress"](0.7, desc="Synthesizing findings across papers...")
-
-        # Skip if no analyses available after filtering
-        if state.get("errors") and not state.get("filtered_analyses"):
-            return state
-
-        # Use filtered data for synthesis
-        synthesis_state = state.copy()
-        synthesis_state["papers"] = state.get("filtered_papers", state.get("papers", []))
-        synthesis_state["analyses"] = state.get("filtered_analyses", state.get("analyses", []))
-
-        result = self.synthesis_agent.run(synthesis_state)
-        state["synthesis"] = result.get("synthesis")
-        state["token_usage"] = result.get("token_usage", state.get("token_usage", {}))
-
-        return state
-
-    def _citation_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        LangGraph node for citation agent.
-
-        Args:
-            state: Current workflow state
-
-        Returns:
-            Updated state with validated output and citations
-        """
-        if "progress" in state:
-            state["progress"](0.9, desc="Validating and generating citations...")
-
-        # Use filtered data for citations (same as synthesis)
-        citation_state = state.copy()
-        citation_state["papers"] = state.get("filtered_papers", state.get("papers", []))
-        citation_state["analyses"] = state.get("filtered_analyses", state.get("analyses", []))
-
-        result = self.citation_agent.run(citation_state)
-        state["validated_output"] = result.get("validated_output")
-        state["token_usage"] = result.get("token_usage", state.get("token_usage", {}))
-
-        return state
-
-    def _should_continue_after_retriever(self, state: Dict[str, Any]) -> str:
-        """
-        Decide workflow path after retriever node.
-
-        Args:
-            state: Current workflow state
-
-        Returns:
-            "continue" if papers found, "end" if no papers
-        """
-        if not state.get("papers"):
-            logger.warning("No papers found, terminating workflow early")
-            if "progress" in state:
-                state["progress"](1.0, desc="No papers found")
-            return "end"
-        return "continue"
 
     def _create_empty_outputs(self) -> Tuple[pd.DataFrame, str, str, str, str]:
         """Create empty outputs for initial state."""

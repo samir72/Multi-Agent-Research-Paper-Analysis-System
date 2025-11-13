@@ -139,13 +139,3 @@ class EmbeddingGenerator:
             logger.error(f"Error generating batch embeddings: {str(e)}")
             raise
 
-    def get_embedding_dimension(self) -> int:
-        """
-        Get the dimension of embeddings.
-
-        Returns:
-            Embedding dimension
-        """
-        # text-embedding-3-small has 1536 dimensions
-        test_embedding = self.generate_embedding("test")
-        return len(test_embedding)

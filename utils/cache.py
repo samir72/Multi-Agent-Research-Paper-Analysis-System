@@ -173,21 +173,3 @@ class SemanticCache:
         except Exception as e:
             logger.error(f"Error storing in cache: {str(e)}")
 
-    def clear(self):
-        """Clear all cache data."""
-        self.cache_data = {}
-        self._save_cache()
-        logger.info("Cache cleared")
-
-    def get_stats(self) -> Dict[str, Any]:
-        """
-        Get cache statistics.
-
-        Returns:
-            Dictionary with cache stats
-        """
-        return {
-            "total_entries": len(self.cache_data),
-            "cache_file_size": self.cache_file.stat().st_size if self.cache_file.exists() else 0,
-            "similarity_threshold": self.similarity_threshold
-        }

@@ -2,7 +2,7 @@
 Pydantic schemas for type safety and validation.
 """
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, validator
 import logging
 

@@ -8,7 +8,7 @@ import threading
 from typing import Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import AzureOpenAI
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from utils.schemas import Analysis, Paper
 from rag.retrieval import RAGRetriever

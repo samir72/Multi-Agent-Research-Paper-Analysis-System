@@ -73,10 +73,6 @@ class PDFProcessor:
             logger.error(f"Error reading PDF {pdf_path}: {str(e)}")
             return None
 
-    def _count_tokens(self, text: str) -> int:
-        """Count tokens in text."""
-        return len(self.encoding.encode(text))
-
     def _generate_chunk_id(self, paper_id: str, chunk_index: int) -> str:
         """Generate unique chunk ID."""
         content = f"{paper_id}_{chunk_index}"
