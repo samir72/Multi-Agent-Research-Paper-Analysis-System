@@ -13,8 +13,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          lfs: true
+          fetch-depth: 1  # Shallow clone to avoid large files in history
+          lfs: false  # Don't fetch LFS files since we don't use them
 
       - name: Push to Hugging Face Space
         env:
@@ -42,5 +42,11 @@ jobs:
           echo "Testing authentication with git ls-remote..."
           git ls-remote hf
 
-          echo "Pushing HEAD to main on HF Space..."
-          git push --force hf HEAD:main
+          echo "Creating fresh orphan branch without history..."
+          # Create a new branch with only current state (no history with large files)
+          git checkout --orphan temp-clean-branch
+          git add -A
+          git commit -m "Clean sync from GitHub - no large files in history"
+
+          echo "Force pushing clean branch to HF Space..."
+          git push --force hf temp-clean-branch:main
