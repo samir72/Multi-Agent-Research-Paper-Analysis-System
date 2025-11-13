@@ -15,7 +15,7 @@ pypdf>=3.0.0
 pydantic>=2.0.0
 
 # MCP (Model Context Protocol) # force a build to get latest fixes
-mcp>=1.17.0,<2.0.0 #mcp is causing issues with fastmcp, pin between the range
+mcp>=1.17.0,<2.0.0 #mcp is causing issues with fastmcp.
 fastmcp==2.13.0.2
 #mcp>=0.9.0
 arxiv-mcp-server>=0.1.0
