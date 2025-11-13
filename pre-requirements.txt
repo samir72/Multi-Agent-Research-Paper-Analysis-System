@@ -1,0 +1,4 @@
+pip>=24.2
+setuptools>=75
+wheel>=0.44
+pipdeptree>=2.23.0
