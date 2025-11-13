@@ -1,7 +1,26 @@
 """
 Main Gradio application with LangGraph agent orchestration.
 """
+# Fix MCP dependency conflict on Hugging Face Spaces startup
+# This must run before any other imports that depend on mcp
+import subprocess
+import sys
 import os
+
+# Only run the fix if we detect we're in a fresh environment
+if os.getenv("SPACE_ID"):  # Running on Hugging Face Spaces
+    try:
+        print("🔧 Fixing MCP dependency conflict for Hugging Face Spaces...")
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps", "mcp==1.17.0"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        print("✅ MCP dependency fixed!")
+    except Exception as e:
+        print(f"⚠️  Warning: Could not fix MCP dependency: {e}")
+        print("   App may still work if dependencies are correctly installed")
+
 import time
 import logging
 import copy
