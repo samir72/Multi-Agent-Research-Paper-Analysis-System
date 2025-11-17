@@ -34,15 +34,31 @@ class EmbeddingGenerator:
         self.batch_size = batch_size
         self.embedding_model = embedding_model
 
+        # Validate configuration
+        if not self.embedding_model:
+            raise ValueError(
+                "AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME environment variable is not set. "
+                "This is required for generating embeddings. Please set it in your .env file."
+            )
+
+        api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
+
+        if not api_key or not endpoint:
+            raise ValueError(
+                "AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT must be set. "
+                "Please configure them in your .env file."
+            )
+
         # Initialize Azure OpenAI client
         try:
             self.client = AzureOpenAI(
-                api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-                #api_version="2024-02-01",
-                api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-                azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
+                api_key=api_key,
+                api_version=api_version,
+                azure_endpoint=endpoint
             )
-            logger.info("Azure OpenAI client initialized")
+            logger.info(f"Azure OpenAI client initialized for embeddings (deployment: {self.embedding_model})")
         except Exception as e:
             logger.error(f"Failed to initialize Azure OpenAI client: {str(e)}")
             raise
@@ -81,7 +97,15 @@ class EmbeddingGenerator:
             return embedding
 
         except Exception as e:
-            logger.error(f"Error generating embedding: {str(e)}")
+            error_msg = str(e)
+            if "404" in error_msg or "Resource not found" in error_msg:
+                logger.error(
+                    f"Embedding deployment '{self.embedding_model}' not found. "
+                    f"Please verify that this deployment exists in your Azure OpenAI resource. "
+                    f"Original error: {error_msg}"
+                )
+            else:
+                logger.error(f"Error generating embedding: {error_msg}")
             raise
 
     @observe(name="generate_embeddings_batch", as_type="span")
@@ -138,6 +162,14 @@ class EmbeddingGenerator:
             return all_embeddings
 
         except Exception as e:
-            logger.error(f"Error generating batch embeddings: {str(e)}")
+            error_msg = str(e)
+            if "404" in error_msg or "Resource not found" in error_msg:
+                logger.error(
+                    f"Embedding deployment '{self.embedding_model}' not found. "
+                    f"Please verify that this deployment exists in your Azure OpenAI resource. "
+                    f"Original error: {error_msg}"
+                )
+            else:
+                logger.error(f"Error generating batch embeddings: {error_msg}")
             raise
 

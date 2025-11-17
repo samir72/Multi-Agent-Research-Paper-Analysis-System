@@ -661,13 +661,28 @@ This repository includes a GitHub Actions workflow that automatically syncs to H
 
 ### Hugging Face Spaces (Manual Deployment)
 
+**📖 Complete Guide**: See [HUGGINGFACE_DEPLOYMENT.md](HUGGINGFACE_DEPLOYMENT.md) for detailed deployment instructions and troubleshooting.
+
+**Quick Setup:**
+
 1. Create a new Space on Hugging Face
 2. Upload all files from this repository
-3. Add the following secrets in Space settings:
-   - `AZURE_OPENAI_ENDPOINT`
-   - `AZURE_OPENAI_API_KEY`
-   - `AZURE_OPENAI_DEPLOYMENT_NAME`
-4. The app will automatically deploy
+3. **Required**: Add the following secrets in Space settings → Repository secrets:
+   - `AZURE_OPENAI_ENDPOINT` (e.g., `https://your-resource.openai.azure.com/`)
+   - `AZURE_OPENAI_API_KEY` (your Azure OpenAI API key)
+   - `AZURE_OPENAI_DEPLOYMENT_NAME` (e.g., `gpt-4o-mini`)
+   - `AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME` (e.g., `text-embedding-3-small`) ⚠️ **Required!**
+   - `AZURE_OPENAI_API_VERSION` (e.g., `2024-05-01-preview`)
+4. Optional: Add LangFuse secrets for observability:
+   - `LANGFUSE_PUBLIC_KEY`
+   - `LANGFUSE_SECRET_KEY`
+5. Set startup command to `bash huggingface_startup.sh`
+6. The app will automatically deploy with environment validation
+
+**Common Issues:**
+- **404 Error**: Missing `AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME` - add it to secrets
+- **Validation Error**: Startup script will check all required variables and show clear error messages
+- **MCP Conflicts**: Automatically resolved by startup script
 
 ### Local Docker
 

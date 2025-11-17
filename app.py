@@ -40,6 +40,40 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
+# Validate required environment variables
+def validate_environment():
+    """Validate that all required environment variables are set."""
+    required_vars = [
+        "AZURE_OPENAI_ENDPOINT",
+        "AZURE_OPENAI_API_KEY",
+        "AZURE_OPENAI_DEPLOYMENT_NAME",
+        "AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME"
+    ]
+
+    missing_vars = []
+    for var in required_vars:
+        value = os.getenv(var)
+        if not value or value.strip() == "":
+            missing_vars.append(var)
+
+    if missing_vars:
+        error_msg = (
+            f"Missing required environment variables: {', '.join(missing_vars)}\n"
+            f"Please set them in your .env file or HuggingFace Spaces secrets.\n"
+            f"See .env.example for reference."
+        )
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+
+    # Log configuration (masked)
+    logger.info(f"Azure OpenAI Endpoint: {os.getenv('AZURE_OPENAI_ENDPOINT')}")
+    logger.info(f"LLM Deployment: {os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME')}")
+    logger.info(f"Embedding Deployment: {os.getenv('AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME')}")
+    logger.info(f"API Version: {os.getenv('AZURE_OPENAI_API_VERSION', '2024-02-01')}")
+
+# Validate environment before importing other modules
+validate_environment()
+
 # Import utilities
 from utils.arxiv_client import ArxivClient
 from utils.pdf_processor import PDFProcessor
