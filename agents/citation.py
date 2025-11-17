@@ -165,7 +165,7 @@ class CitationAgent:
         pricing_config = get_pricing_config()
 
         # Get model names from model_desc (set by app.py)
-        llm_model = model_desc.get("llm_model", "phi-4-multimodal-instruct")
+        llm_model = model_desc.get("llm_model", "gpt-4o-mini")
         embedding_model = model_desc.get("embedding_model", "text-embedding-3-small")
 
         # Get pricing for models

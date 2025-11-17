@@ -85,13 +85,13 @@ class PricingConfig:
         """Return default pricing if config file not found."""
         return {
             "models": {
-                "phi-4-multimodal-instruct": {
-                    "input_price_per_1m": 0.08,
-                    "output_price_per_1m": 0.32
-                },
                 "gpt-4o-mini": {
                     "input_price_per_1m": 0.15,
                     "output_price_per_1m": 0.60
+                },
+                "phi-4-multimodal-instruct": {
+                    "input_price_per_1m": 0.08,
+                    "output_price_per_1m": 0.32
                 }
             },
             "embeddings": {
@@ -136,7 +136,7 @@ class PricingConfig:
             }
 
         # Default fallback
-        logger.warning(f"Model {model_name} not found in config, using phi-4 defaults")
+        logger.warning(f"Model {model_name} not found in config, using gpt-4o-mini defaults")
         return {
             "input_price_per_1m": 0.08,
             "output_price_per_1m": 0.32

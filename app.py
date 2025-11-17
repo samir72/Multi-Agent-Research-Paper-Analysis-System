@@ -392,7 +392,7 @@ class ResearchPaperAnalyzer:
                 category=category if category != "All" else None,
                 num_papers=num_papers,
                 model_desc={
-                    "llm_model": os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "phi-4-multimodal-instruct"),
+                    "llm_model": os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o-mini"),
                     "embedding_model": os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME", "text-embedding-3-small")
                 },
                 start_time=start_time,

@@ -114,7 +114,7 @@ User Query → Retriever → [Has papers?]
 
 ## Technical Stack
 
-- **LLM**: Azure OpenAI (gpt-4o-mini or Phi-4-multimodal-instruct) with temperature=0
+- **LLM**: Azure OpenAI (gpt-4o-mini) with temperature=0
 - **Embeddings**: Azure OpenAI text-embedding-3-small
 - **Vector Store**: ChromaDB with persistent storage
 - **Orchestration**: LangGraph with conditional routing and checkpointing
@@ -166,7 +166,7 @@ cp .env.example .env
 Required environment variables:
 - `AZURE_OPENAI_ENDPOINT`: Your Azure OpenAI endpoint (e.g., https://your-resource.openai.azure.com/)
 - `AZURE_OPENAI_API_KEY`: Your Azure OpenAI API key
-- `AZURE_OPENAI_DEPLOYMENT_NAME`: Your deployment name (e.g., gpt-4o-mini or phi-4-multimodal-instruct)
+- `AZURE_OPENAI_DEPLOYMENT_NAME`: Your deployment name (e.g., gpt-4o-mini)
 - `AZURE_OPENAI_API_VERSION`: API version (optional, defaults in code)
 
 Optional:
@@ -191,7 +191,7 @@ Optional:
 - `LANGFUSE_FLUSH_AT`: Batch size for flushing traces (default: `15`)
 - `LANGFUSE_FLUSH_INTERVAL`: Flush interval in seconds (default: `10`)
 
-**Note**: Pricing is configured in `config/pricing.json` with support for phi-4-multimodal-instruct, gpt-4o-mini, and gpt-4o. Environment variables override JSON settings.
+**Note**: Pricing is configured in `config/pricing.json` with support for gpt-4o-mini, gpt-4o, and phi-4-multimodal-instruct. Environment variables override JSON settings.
 
 ### MCP (Model Context Protocol) Integration
 
@@ -385,8 +385,8 @@ The system implements multiple techniques to minimize hallucinations:
 ### Cost Optimization
 
 - **Configurable Pricing System**: `config/pricing.json` for easy model switching
-  - Supports phi-4-multimodal-instruct ($0.08/$0.32 per 1M tokens)
   - Supports gpt-4o-mini ($0.15/$0.60 per 1M tokens)
+  - Supports phi-4-multimodal-instruct ($0.08/$0.32 per 1M tokens)
   - Environment variable overrides for testing and custom pricing
 - **Thread-safe Token Tracking**: Accurate counts across parallel processing
 - **Request Batching**: Batch embeddings for efficiency
@@ -394,7 +394,7 @@ The system implements multiple techniques to minimize hallucinations:
 - **Semantic Caching**: Return cached results for similar queries (cosine similarity >0.95)
 - **Token Usage Logging**: Track input/output/embedding tokens per request
 - **LangFuse Cost Analytics**: Per-agent cost attribution and optimization insights
-- **Target**: <$0.50 per analysis session (5 papers with phi-4)
+- **Target**: <$0.50 per analysis session (5 papers with gpt-4o-mini)
 
 ### LangFuse Observability (v2.6)
 
@@ -1156,7 +1156,7 @@ For issues, questions, or feature requests, please:
 
 **💰 Configurable Pricing System (November 5, 2025):**
 - ✅ **Dynamic pricing configuration** - No code changes needed when switching models
-  - New `config/pricing.json` with pricing for phi-4-multimodal-instruct, gpt-4o-mini, gpt-4o
+  - New `config/pricing.json` with pricing for gpt-4o-mini, gpt-4o, phi-4-multimodal-instruct
   - New `utils/config.py` with PricingConfig class
   - Support for multiple embedding models (text-embedding-3-small, text-embedding-3-large)
 - ✅ **Environment variable overrides** - Easy testing and custom pricing

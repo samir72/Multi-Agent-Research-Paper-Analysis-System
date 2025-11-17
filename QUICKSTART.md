@@ -20,7 +20,7 @@ Edit `.env`:
 ```
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 AZURE_OPENAI_API_KEY=your-api-key-here
-AZURE_OPENAI_DEPLOYMENT_NAME=Phi-4-multimodal-instruct
+AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o-mini
 ```
 
 ### 3. Run the Application
