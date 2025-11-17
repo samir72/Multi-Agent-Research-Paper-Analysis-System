@@ -11,6 +11,7 @@ from utils.pdf_processor import PDFProcessor
 from utils.schemas import AgentState, PaperChunk, Paper
 from rag.vector_store import VectorStore
 from rag.embeddings import EmbeddingGenerator
+from utils.langfuse_client import observe
 
 logging.basicConfig(
     level=logging.INFO,
@@ -155,6 +156,7 @@ class RetrieverAgent:
         logger.error(f"All download attempts failed for {paper.arxiv_id}")
         return None
 
+    @observe(name="retriever_agent_run", as_type="generation")
     def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute retriever agent.

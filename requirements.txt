@@ -2,8 +2,12 @@
 gradio>=4.0.0
 langchain>=0.1.0
 langchain-openai>=0.0.5
-langgraph>=0.0.20
+langgraph>=0.2.0
 openai>=1.0.0
+
+# Observability
+# Note: langfuse includes OpenAI integration - no separate langfuse-openai package needed
+langfuse>=2.0.0
 
 # Vector Store & Embeddings
 chromadb>=0.4.0

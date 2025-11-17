@@ -2,12 +2,12 @@
 Citation Agent: Validate claims and generate proper citations.
 """
 import logging
-import time
 from typing import Dict, Any, List
 
 from utils.schemas import SynthesisResult, Paper, Citation, ValidatedOutput
 from utils.config import get_pricing_config
 from rag.retrieval import RAGRetriever
+from utils.langfuse_client import observe
 
 logging.basicConfig(
     level=logging.INFO,
@@ -199,6 +199,7 @@ class CitationAgent:
         logger.info(f"Validated output created: ${cost_estimate:.4f}, {processing_time:.1f}s")
         return validated_output
 
+    @observe(name="citation_agent_run", as_type="span")
     def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute citation agent.
@@ -237,18 +238,13 @@ class CitationAgent:
             # Retrieve model descriptions from state
             model_desc = state.get("model_desc", {})
 
-            # Calculate processing time from start_time
-            start_time = state.get("start_time", time.time())
-            processing_time = time.time() - start_time
-            logger.info(f"Total processing time: {processing_time:.1f}s")
-
-            # Create validated output
+            # Create validated output (processing_time will be calculated in finalize node)
             validated_output = self.create_validated_output(
                 synthesis=synthesis,
                 papers=papers,
                 token_usage=token_usage,
                 model_desc=model_desc,
-                processing_time=processing_time
+                processing_time=0.0  # Placeholder, updated in finalize node
             )
 
             state["validated_output"] = validated_output

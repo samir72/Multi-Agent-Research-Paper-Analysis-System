@@ -10,6 +10,44 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 
+class LangFuseConfig:
+    """Manage LangFuse observability configuration."""
+
+    def __init__(self):
+        """Initialize LangFuse configuration from environment variables."""
+        self.enabled = os.getenv("LANGFUSE_ENABLED", "true").lower() == "true"
+        self.public_key = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+        self.secret_key = os.getenv("LANGFUSE_SECRET_KEY", "")
+        self.host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+
+        # Optional: custom settings
+        self.trace_all_llm_calls = os.getenv("LANGFUSE_TRACE_ALL_LLM", "true").lower() == "true"
+        self.trace_rag = os.getenv("LANGFUSE_TRACE_RAG", "true").lower() == "true"
+        self.flush_at = int(os.getenv("LANGFUSE_FLUSH_AT", "15"))  # Flush after N observations
+        self.flush_interval = int(os.getenv("LANGFUSE_FLUSH_INTERVAL", "10"))  # Seconds
+
+    def is_configured(self) -> bool:
+        """Check if LangFuse is properly configured."""
+        if not self.enabled:
+            return False
+
+        if not self.public_key or not self.secret_key:
+            logger.warning("LangFuse is enabled but API keys are missing")
+            return False
+
+        return True
+
+    def get_init_params(self) -> Dict:
+        """Get initialization parameters for LangFuse client."""
+        return {
+            "public_key": self.public_key,
+            "secret_key": self.secret_key,
+            "host": self.host,
+            "flush_at": self.flush_at,
+            "flush_interval": self.flush_interval,
+        }
+
+
 class PricingConfig:
     """Manage model pricing configuration with JSON + env override support."""
 
@@ -134,8 +172,9 @@ class PricingConfig:
         return 0.02
 
 
-# Global instance (lazy loaded)
+# Global instances (lazy loaded)
 _pricing_config = None
+_langfuse_config = None
 
 
 def get_pricing_config() -> PricingConfig:
@@ -144,3 +183,11 @@ def get_pricing_config() -> PricingConfig:
     if _pricing_config is None:
         _pricing_config = PricingConfig()
     return _pricing_config
+
+
+def get_langfuse_config() -> LangFuseConfig:
+    """Get or create global LangFuse config instance."""
+    global _langfuse_config
+    if _langfuse_config is None:
+        _langfuse_config = LangFuseConfig()
+    return _langfuse_config

@@ -6,6 +6,7 @@ from typing import List, Optional, Dict, Any
 
 from rag.vector_store import VectorStore
 from rag.embeddings import EmbeddingGenerator
+from utils.langfuse_client import observe
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,6 +36,7 @@ class RAGRetriever:
         self.embedding_generator = embedding_generator
         self.top_k = top_k
 
+    @observe(name="rag_retrieve", as_type="span")
     def retrieve(
         self,
         query: str,

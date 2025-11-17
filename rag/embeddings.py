@@ -6,6 +6,7 @@ import logging
 from typing import List
 from openai import AzureOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
+from utils.langfuse_client import observe
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,6 +84,7 @@ class EmbeddingGenerator:
             logger.error(f"Error generating embedding: {str(e)}")
             raise
 
+    @observe(name="generate_embeddings_batch", as_type="span")
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10)

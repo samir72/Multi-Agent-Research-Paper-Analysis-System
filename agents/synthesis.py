@@ -9,6 +9,7 @@ from openai import AzureOpenAI
 
 from utils.schemas import Analysis, SynthesisResult, ConsensusPoint, Contradiction, Paper
 from rag.retrieval import RAGRetriever
+from utils.langfuse_client import observe
 
 logging.basicConfig(
     level=logging.INFO,
@@ -280,6 +281,7 @@ CRITICAL JSON FORMATTING RULES:
                 papers_analyzed=[p.arxiv_id for p in papers]
             )
 
+    @observe(name="synthesis_agent_run", as_type="generation")
     def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute synthesis agent.

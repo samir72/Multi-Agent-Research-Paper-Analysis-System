@@ -12,6 +12,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from utils.schemas import Analysis, Paper
 from rag.retrieval import RAGRetriever
+from utils.langfuse_client import observe
 
 logging.basicConfig(
     level=logging.INFO,
@@ -302,6 +303,7 @@ CRITICAL JSON FORMATTING RULES:
                 confidence_score=0.0
             )
 
+    @observe(name="analyzer_agent_run", as_type="generation")
     def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute analyzer agent with parallel processing.

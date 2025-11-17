@@ -4,15 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Core Architecture
 
-This is a **multi-agent RAG system** for analyzing academic papers from arXiv. The system uses a sequential agent workflow where state flows through 4 specialized agents:
+This is a **multi-agent RAG system** for analyzing academic papers from arXiv. The system uses **LangGraph** for workflow orchestration and **LangFuse** for comprehensive observability.
 
 ### Agent Pipeline Flow
 
 ```
-User Query → Retriever → Analyzer → Synthesis → Citation → Output
+User Query → Retriever → Analyzer → Filter → Synthesis → Citation → Output
+                ↓          ↓         ↓         ↓           ↓
+            [LangFuse Tracing for All Nodes]
 ```
 
-**State Dictionary**: All agents operate on a shared state dictionary that flows through the pipeline:
+**Orchestration**: The workflow is managed by LangGraph (`orchestration/workflow_graph.py`):
+- Conditional routing (early termination if no papers found or all analyses fail)
+- Automatic checkpointing with `MemorySaver`
+- State management with type-safe `AgentState` TypedDict
+- Node wrappers in `orchestration/nodes.py` with automatic tracing
+
+**State Dictionary** (`utils/langgraph_state.py`): All agents operate on a shared state dictionary that flows through the pipeline:
 - `query`: User's research question
 - `category`: Optional arXiv category filter
 - `num_papers`: Number of papers to analyze
@@ -23,26 +31,35 @@ User Query → Retriever → Analyzer → Synthesis → Citation → Output
 - `validated_output`: ValidatedOutput object (populated by Citation)
 - `errors`: List of error messages accumulated across agents
 - `token_usage`: Dict tracking input/output/embedding tokens
+- `trace_id`: LangFuse trace identifier (for observability)
+- `session_id`: User session tracking
+- `user_id`: Optional user identifier
+
+**IMPORTANT**: Only msgpack-serializable data should be stored in the state. Do NOT add complex objects like Gradio Progress, file handles, or callbacks to the state dictionary (see BUGFIX_MSGPACK_SERIALIZATION.md).
 
 ### Agent Responsibilities
 
 1. **RetrieverAgent** (`agents/retriever.py`):
+   - Decorated with `@observe` for LangFuse tracing
    - Searches arXiv API using `ArxivClient`, `MCPArxivClient`, or `FastMCPArxivClient` (configurable via env)
    - Downloads PDFs to `data/papers/` (direct API) or MCP server storage (MCP mode)
    - **Intelligent Fallback**: Automatically falls back to direct API if primary MCP client fails
    - Processes PDFs with `PDFProcessor` (500-token chunks, 50-token overlap)
-   - Generates embeddings via `EmbeddingGenerator` (Azure OpenAI text-embedding-3-small)
+   - Generates embeddings via `EmbeddingGenerator` (Azure OpenAI text-embedding-3-small, traced)
    - Stores chunks in ChromaDB via `VectorStore`
    - **FastMCP Support**: Auto-start FastMCP server for standardized arXiv access
 
 2. **AnalyzerAgent** (`agents/analyzer.py`):
+   - Decorated with `@observe(as_type="generation")` for LLM call tracing
    - Analyzes each paper individually using RAG
    - Uses 4 broad queries per paper: methodology, results, conclusions, limitations
    - Deduplicates chunks by chunk_id
    - Calls Azure OpenAI with **temperature=0** and JSON mode
+   - RAG retrieval automatically traced via `@observe` on `RAGRetriever.retrieve()`
    - Returns structured `Analysis` objects with confidence scores
 
 3. **SynthesisAgent** (`agents/synthesis.py`):
+   - Decorated with `@observe(as_type="generation")` for LLM call tracing
    - Compares findings across all papers
    - Identifies consensus points, contradictions, research gaps
    - Creates executive summary addressing user's query
@@ -50,6 +67,7 @@ User Query → Retriever → Analyzer → Synthesis → Citation → Output
    - Returns `SynthesisResult` with confidence scores
 
 4. **CitationAgent** (`agents/citation.py`):
+   - Decorated with `@observe(as_type="span")` for data processing tracing
    - Generates APA-formatted citations for all papers
    - Validates synthesis claims against source papers
    - Calculates cost estimates (GPT-4o-mini pricing)
@@ -81,6 +99,49 @@ Source: {arxiv_url}
 **Semantic Caching**: Cache hits when cosine similarity ≥ 0.95 between query embeddings. Cache key includes both query and category.
 
 **Error Handling Philosophy**: Agents catch exceptions, log errors, append to `state["errors"]`, and return partial results rather than failing completely. For example, Analyzer returns confidence_score=0.0 on failure.
+
+### LangGraph Orchestration (`orchestration/`)
+
+**Workflow Graph** (`orchestration/workflow_graph.py`):
+- `create_workflow_graph()`: Creates StateGraph with all nodes and conditional edges
+- `run_workflow()`: Sync wrapper for Gradio compatibility (uses `nest-asyncio`)
+- `run_workflow_async()`: Async streaming execution
+- `get_workflow_state()`: Retrieve current state by thread ID
+
+**Node Wrappers** (`orchestration/nodes.py`):
+- `retriever_node()`: Executes RetrieverAgent with LangFuse tracing
+- `analyzer_node()`: Executes AnalyzerAgent with LangFuse tracing
+- `filter_node()`: Filters out low-confidence analyses (confidence_score < 0.7)
+- `synthesis_node()`: Executes SynthesisAgent with LangFuse tracing
+- `citation_node()`: Executes CitationAgent with LangFuse tracing
+
+**Conditional Routing**:
+- `should_continue_after_retriever()`: Returns "END" if no papers found, else "analyzer"
+- `should_continue_after_filter()`: Returns "END" if all analyses filtered out, else "synthesis"
+
+**Workflow Execution Flow**:
+```python
+# In app.py
+workflow_app = create_workflow_graph(
+    retriever_agent=self.retriever_agent,
+    analyzer_agent=self.analyzer_agent,
+    synthesis_agent=self.synthesis_agent,
+    citation_agent=self.citation_agent
+)
+
+# Run workflow with checkpointing
+config = {"configurable": {"thread_id": session_id}}
+final_state = run_workflow(workflow_app, initial_state, config, progress)
+```
+
+**State Serialization**:
+- LangGraph uses msgpack for state checkpointing
+- **CRITICAL**: Only msgpack-serializable types allowed in state
+- ✅ Primitives: str, int, float, bool, None
+- ✅ Collections: list, dict
+- ✅ Pydantic models (via `.model_dump()`)
+- ❌ Complex objects: Gradio Progress, file handles, callbacks
+- See BUGFIX_MSGPACK_SERIALIZATION.md for detailed fix documentation
 
 ## Development Commands
 
@@ -124,6 +185,16 @@ cp .env.example .env
 # USE_LEGACY_MCP=false              # Set to 'true' to use legacy MCP instead of FastMCP
 # MCP_ARXIV_STORAGE_PATH=./data/mcp_papers/  # MCP server storage path
 # FASTMCP_SERVER_PORT=5555          # Port for FastMCP server (auto-started)
+
+# Optional LangFuse observability variables:
+# LANGFUSE_ENABLED=true            # Enable LangFuse tracing
+# LANGFUSE_PUBLIC_KEY=pk-lf-...    # LangFuse public key
+# LANGFUSE_SECRET_KEY=sk-lf-...    # LangFuse secret key
+# LANGFUSE_HOST=https://cloud.langfuse.com  # LangFuse host (cloud or self-hosted)
+# LANGFUSE_TRACE_ALL_LLM=true      # Auto-trace all Azure OpenAI calls
+# LANGFUSE_TRACE_RAG=true          # Trace RAG operations
+# LANGFUSE_FLUSH_AT=15             # Batch size for flushing traces
+# LANGFUSE_FLUSH_INTERVAL=10       # Flush interval in seconds
 ```
 
 ### Data Management
@@ -153,7 +224,7 @@ client = AzureOpenAI(
 )
 ```
 
-### Pydantic Schemas (`utils/schemas.py`)
+### Pydantic Schemas (`utils/schemas.py` and `utils/langgraph_state.py`)
 
 All data structures use Pydantic for validation:
 - `Paper`: arXiv paper metadata
@@ -161,7 +232,17 @@ All data structures use Pydantic for validation:
 - `Analysis`: Individual paper analysis results
 - `SynthesisResult`: Cross-paper synthesis with ConsensusPoint and Contradiction
 - `ValidatedOutput`: Final output with citations and cost tracking
-- `AgentState`: Complete state dictionary (not actively used but defined)
+- `AgentState`: TypedDict for LangGraph state management (used in workflow orchestration)
+
+**Observability Models** (`observability/trace_reader.py`):
+- `TraceInfo`: Trace metadata and performance metrics
+- `SpanInfo`: Agent execution data with timings
+- `GenerationInfo`: LLM call details (prompt, completion, tokens, cost)
+
+**Analytics Models** (`observability/analytics.py`):
+- `AgentStats`: Per-agent performance statistics (latency, tokens, cost, errors)
+- `WorkflowStats`: Workflow-level aggregated metrics
+- `AgentTrajectory`: Complete execution path with timings
 
 ### Retry Logic
 
@@ -264,11 +345,21 @@ FASTMCP_SERVER_PORT=5555
 ### Gradio UI Structure (`app.py`)
 
 ResearchPaperAnalyzer class orchestrates the workflow:
-1. Check semantic cache first
-2. Initialize state dictionary
-3. Run agents sequentially with progress updates
-4. Cache results on success
-5. Format output for 5 tabs: Papers, Analysis, Synthesis, Citations, Stats
+1. Initialize LangFuse client and instrument Azure OpenAI (if enabled)
+2. Create LangGraph workflow with all agents
+3. Check semantic cache first
+4. Initialize state dictionary with `create_initial_state()`
+5. Generate unique `session_id` for trace tracking
+6. Run LangGraph workflow via `run_workflow()` from orchestration module
+7. Flush LangFuse traces to ensure upload
+8. Cache results on success
+9. Format output for 5 tabs: Papers, Analysis, Synthesis, Citations, Stats
+
+**LangGraph Workflow Execution**:
+- Nodes execute in order: retriever → analyzer → filter → synthesis → citation
+- Conditional edges for early termination (no papers found, all analyses failed)
+- Checkpointing enabled via `MemorySaver` for workflow state persistence
+- Progress updates still work via local variable (NOT in state to avoid msgpack serialization issues)
 
 ## Testing Patterns
 
@@ -296,13 +387,94 @@ When adding tests for other agents, follow the same pattern:
 - Test edge cases (empty inputs, API failures)
 - For async code, use `pytest-asyncio` with `@pytest.mark.asyncio`
 
+## Observability and Analytics
+
+### LangFuse Integration
+
+The system automatically traces all agent executions and LLM calls when LangFuse is enabled:
+
+**Configuration** (`utils/langfuse_client.py`):
+- `initialize_langfuse()`: Initialize global LangFuse client at startup
+- `instrument_openai()`: Auto-trace all Azure OpenAI API calls
+- `@observe` decorator: Trace custom functions/spans
+- `flush_langfuse()`: Ensure all traces uploaded before shutdown
+
+**Automatic Tracing**:
+- All agent `run()` methods decorated with `@observe`
+- LLM calls automatically captured (prompt, completion, tokens, cost)
+- RAG operations traced (embeddings, vector search)
+- Workflow state transitions logged
+
+### Trace Querying (`observability/trace_reader.py`)
+
+```python
+from observability import TraceReader
+
+reader = TraceReader()
+
+# Get recent traces
+traces = reader.get_traces(limit=10)
+
+# Filter by user/session
+traces = reader.get_traces(user_id="user-123", session_id="session-abc")
+
+# Filter by date range
+from datetime import datetime, timedelta
+start = datetime.now() - timedelta(days=7)
+traces = reader.filter_by_date_range(traces, start_date=start)
+
+# Get specific agent executions
+analyzer_spans = reader.filter_by_agent(traces, agent_name="analyzer_agent")
+
+# Export traces
+reader.export_traces_to_json(traces, "traces.json")
+reader.export_traces_to_csv(traces, "traces.csv")
+```
+
+### Performance Analytics (`observability/analytics.py`)
+
+```python
+from observability import AgentPerformanceAnalyzer, AgentTrajectoryAnalyzer
+
+# Performance metrics
+perf_analyzer = AgentPerformanceAnalyzer()
+
+# Get agent latency statistics
+stats = perf_analyzer.agent_latency_stats("analyzer_agent", days=7)
+print(f"P95 latency: {stats.p95_latency_ms:.2f}ms")
+
+# Token usage breakdown
+token_usage = perf_analyzer.token_usage_breakdown(days=7)
+print(f"Total tokens: {sum(token_usage.values())}")
+
+# Cost per agent
+costs = perf_analyzer.cost_per_agent(days=7)
+print(f"Total cost: ${sum(costs.values()):.4f}")
+
+# Error rates
+error_rates = perf_analyzer.error_rates(days=7)
+
+# Workflow summary
+summary = perf_analyzer.workflow_performance_summary(days=7)
+print(f"Success rate: {summary.success_rate:.1f}%")
+print(f"Avg duration: {summary.avg_duration_ms/1000:.2f}s")
+
+# Trajectory analysis
+traj_analyzer = AgentTrajectoryAnalyzer()
+analysis = traj_analyzer.analyze_execution_paths(days=7)
+print(f"Most common path: {analysis['most_common_path']}")
+```
+
+See `observability/README.md` for comprehensive documentation.
+
 ## Common Modification Points
 
 **Adding a new agent**:
 1. Create agent class with `run(state) -> state` method
-2. Add to `ResearchPaperAnalyzer.__init__()` in `app.py`
-3. Insert into workflow in `ResearchPaperAnalyzer.run_workflow()`
-4. Update progress tracking
+2. Decorate `run()` with `@observe` for tracing
+3. Add node wrapper in `orchestration/nodes.py`
+4. Add node to workflow graph in `orchestration/workflow_graph.py`
+5. Update conditional routing if needed
 
 **Modifying chunking**:
 - Adjust `chunk_size` and `chunk_overlap` in PDFProcessor initialization
@@ -335,3 +507,83 @@ When adding tests for other agents, follow the same pattern:
 - ChromaDB persistence prevents re-embedding same papers
 - Batch embedding generation in PDFProcessor for efficiency
 - Token usage tracked per request for monitoring
+- LangFuse observability enables cost optimization insights
+- LangGraph overhead: <1% for state management
+- Trace upload overhead: ~5-10ms per trace (async, negligible impact)
+
+## Key Files and Modules
+
+### Core Application
+- `app.py`: Gradio UI and workflow orchestration entry point
+- `utils/config.py`: Configuration management (Azure OpenAI, LangFuse, MCP)
+- `utils/schemas.py`: Pydantic data models for validation
+- `utils/langgraph_state.py`: LangGraph state TypedDict and helpers
+
+### Agents
+- `agents/retriever.py`: Paper retrieval, PDF processing, embeddings
+- `agents/analyzer.py`: Individual paper analysis with RAG
+- `agents/synthesis.py`: Cross-paper synthesis and insights
+- `agents/citation.py`: Citation generation and validation
+
+### RAG Components
+- `rag/pdf_processor.py`: PDF text extraction and chunking
+- `rag/embeddings.py`: Batch embedding generation (Azure OpenAI)
+- `rag/vector_store.py`: ChromaDB vector store management
+- `rag/retrieval.py`: RAG retrieval with formatted context
+
+### Orchestration (LangGraph)
+- `orchestration/__init__.py`: Module exports
+- `orchestration/nodes.py`: Node wrappers with tracing
+- `orchestration/workflow_graph.py`: LangGraph workflow builder
+
+### Observability (LangFuse)
+- `observability/__init__.py`: Module exports
+- `observability/trace_reader.py`: Trace querying and export API
+- `observability/analytics.py`: Performance analytics and trajectory analysis
+- `observability/README.md`: Comprehensive observability documentation
+- `utils/langfuse_client.py`: LangFuse client initialization and helpers
+
+### Utilities
+- `utils/arxiv_client.py`: Direct arXiv API client with retry logic
+- `utils/mcp_arxiv_client.py`: Legacy MCP client implementation
+- `utils/fastmcp_arxiv_client.py`: FastMCP client (recommended)
+- `utils/fastmcp_arxiv_server.py`: FastMCP server with auto-start
+- `utils/semantic_cache.py`: Query caching with embeddings
+
+### Documentation
+- `CLAUDE.md`: This file - comprehensive developer guide
+- `README.md`: User-facing project documentation
+- `REFACTORING_SUMMARY.md`: LangGraph + LangFuse refactoring details
+- `BUGFIX_MSGPACK_SERIALIZATION.md`: msgpack serialization fix documentation
+- `.env.example`: Environment variable template with all options
+
+## Version History and Recent Changes
+
+### Version 2.6: LangGraph Orchestration + LangFuse Observability
+**Added:**
+- LangGraph workflow orchestration with conditional routing
+- LangFuse automatic tracing for all agents and LLM calls
+- Observability Python API for trace querying and analytics
+- Performance analytics (latency, tokens, cost, error rates)
+- Agent trajectory analysis
+- Checkpointing with `MemorySaver`
+
+**Fixed:**
+- msgpack serialization error (removed Gradio Progress from state)
+
+**Dependencies Added:**
+- `langgraph>=0.2.0`
+- `langfuse>=2.0.0`
+- `langfuse-openai>=1.0.0`
+
+**Breaking Changes:**
+- None! Fully backward compatible
+
+**Documentation:**
+- Created `observability/README.md`
+- Created `REFACTORING_SUMMARY.md`
+- Created `BUGFIX_MSGPACK_SERIALIZATION.md`
+- Updated `CLAUDE.md` (this file)
+- Updated `.env.example`
+
+See `REFACTORING_SUMMARY.md` for detailed migration guide and architecture changes.

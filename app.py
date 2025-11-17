@@ -72,6 +72,13 @@ from agents.analyzer import AnalyzerAgent
 from agents.synthesis import SynthesisAgent
 from agents.citation import CitationAgent
 
+# Import LangGraph orchestration
+from orchestration.workflow_graph import create_workflow_graph, run_workflow
+from utils.langgraph_state import create_initial_state
+
+# Import LangFuse observability
+from utils.langfuse_client import initialize_langfuse, instrument_openai, flush_langfuse, shutdown_langfuse
+
 
 
 class ResearchPaperAnalyzer:
@@ -80,6 +87,11 @@ class ResearchPaperAnalyzer:
     def __init__(self):
         """Initialize the analyzer with all components."""
         logger.info("Initializing Research Paper Analyzer...")
+
+        # Initialize LangFuse observability
+        initialize_langfuse()
+        instrument_openai()  # Auto-trace all OpenAI calls
+        logger.info("LangFuse observability initialized")
 
         # Configuration
         storage_path = os.getenv("MCP_ARXIV_STORAGE_PATH", "data/mcp_papers")
@@ -171,75 +183,31 @@ class ResearchPaperAnalyzer:
         self.synthesis_agent = SynthesisAgent(rag_retriever=self.rag_retriever)
         self.citation_agent = CitationAgent(rag_retriever=self.rag_retriever)
 
+        # Create LangGraph workflow
+        self.workflow_app = create_workflow_graph(
+            retriever_agent=self.retriever_agent,
+            analyzer_agent=self.analyzer_agent,
+            synthesis_agent=self.synthesis_agent,
+            citation_agent=self.citation_agent,
+            use_checkpointing=True,
+        )
+        logger.info("LangGraph workflow created with checkpointing")
+
         logger.info("Initialization complete")
 
     def __del__(self):
         """Cleanup on deletion."""
         try:
+            # Flush and shutdown LangFuse
+            logger.info("Shutting down LangFuse observability")
+            shutdown_langfuse()
+
+            # Shutdown FastMCP server if running
             if self.fastmcp_server:
                 logger.info("Shutting down FastMCP server")
                 shutdown_server()
         except Exception as e:
             logger.warning(f"Error during cleanup: {str(e)}")
-
-    def _retriever_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        LangGraph node for retriever agent.
-
-        Args:
-            state: Current workflow state
-
-        Returns:
-            Updated state with papers and chunks
-        """
-        if "progress" in state:
-            state["progress"](0.1, desc="Searching and downloading papers...")
-        return self.retriever_agent.run(state)
-
-    def _filter_low_confidence_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Filter out analyses with low confidence scores.
-
-        Args:
-            state: Current workflow state
-
-        Returns:
-            Updated state with filtered_analyses
-        """
-        analyses = state.get("analyses", [])
-        # Filter out analyses with confidence score of 0.0 (failed analyses)
-        filtered_analyses = [a for a in analyses if a.confidence_score > 0.0]
-        state["filtered_analyses"] = filtered_analyses
-        logger.info(f"Filtered {len(filtered_analyses)}/{len(analyses)} analyses (excluded {len(analyses) - len(filtered_analyses)} failures)")
-        return state
-
-    def _synthesis_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        LangGraph node for synthesis agent.
-
-        Args:
-            state: Current workflow state
-
-        Returns:
-            Updated state with synthesis
-        """
-        if "progress" in state:
-            state["progress"](0.7, desc="Synthesizing findings across papers...")
-        return self.synthesis_agent.run(state)
-
-    def _citation_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        LangGraph node for citation agent.
-
-        Args:
-            state: Current workflow state
-
-        Returns:
-            Updated state with validated_output
-        """
-        if "progress" in state:
-            state["progress"](0.9, desc="Validating and generating citations...")
-        return self.citation_agent.run(state)
 
     def _create_empty_outputs(self) -> Tuple[pd.DataFrame, str, str, str, str]:
         """Create empty outputs for initial state."""
@@ -377,7 +345,7 @@ class ResearchPaperAnalyzer:
         progress=gr.Progress()
     ):
         """
-        Execute the complete research paper analysis workflow with streaming updates.
+        Execute the complete research paper analysis workflow using LangGraph.
 
         This is a generator function that yields progressive UI updates as the workflow executes.
 
@@ -391,8 +359,6 @@ class ResearchPaperAnalyzer:
             Tuple of (papers_df, analysis_html, synthesis_html, citations_html, stats)
             after each significant workflow update
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
         try:
             start_time = time.time()
 
@@ -417,184 +383,71 @@ class ResearchPaperAnalyzer:
                 yield self._format_output(cached_result)
                 return
 
-            # Initialize state for workflow
-            state = {
-                "query": query,
-                "category": category if category != "All" else None,
-                "num_papers": num_papers,
-                "papers": [],
-                "chunks": [],
-                "analyses": [],
-                "synthesis": None,
-                "validated_output": None,
-                "errors": [],
-                "token_usage": {
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "embedding_tokens": 0
-                },
-                "start_time": start_time,
-                "model_desc": {
+            # Create initial state using LangGraph state schema
+            import uuid
+            session_id = f"session-{uuid.uuid4().hex[:8]}"
+
+            initial_state = create_initial_state(
+                query=query,
+                category=category if category != "All" else None,
+                num_papers=num_papers,
+                model_desc={
                     "llm_model": os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "phi-4-multimodal-instruct"),
                     "embedding_model": os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME", "text-embedding-3-small")
                 },
-                "progress": progress
-            }
+                start_time=start_time,
+                session_id=session_id,
+            )
+            # Note: Progress object is NOT added to state to avoid msgpack serialization issues
 
-            # ==== STEP 1: Retriever Agent ====
-            progress(0.1, desc="Searching and downloading papers...")
-            logger.info("=== Running Retriever Agent ===")
-            state = self.retriever_agent.run(state)
+            logger.info(f"Starting LangGraph workflow execution (session: {session_id})")
 
-            if not state.get("papers"):
+            # Execute LangGraph workflow (non-streaming for simplicity)
+            # The workflow internally handles progress updates via the progress callback
+            progress(0.1, desc="Executing workflow...")
+
+            # Execute LangGraph workflow
+            final_state = run_workflow(
+                app=self.workflow_app,
+                initial_state=initial_state,
+                thread_id=session_id,
+                use_streaming=False,  # Set to True for streaming in future
+            )
+
+            logger.info("LangGraph workflow execution complete")
+
+            # Flush LangFuse traces
+            flush_langfuse()
+
+            # Check workflow results
+            if not final_state.get("papers"):
                 logger.warning("No papers found, terminating workflow")
                 progress(1.0, desc="No papers found")
-                yield self._format_error(state.get("errors", ["No papers found"]))
+                yield self._format_error(final_state.get("errors", ["No papers found"]))
                 return
-
-            papers = state["papers"]
-            logger.info(f"Retrieved {len(papers)} papers")
-
-            # Yield papers table with "Pending" status
-            papers_df = self._format_papers_partial(papers, [], 0)
-            empty_html = "<p>Waiting for analysis...</p>"
-            yield (papers_df, empty_html, empty_html, empty_html, empty_html)
-
-            # ==== STEP 2: Analyzer Agent (with streaming per paper) ====
-            progress(0.4, desc="Analyzing papers...")
-            logger.info("=== Running Analyzer Agent (Streaming) ===")
-
-            # Reset token counters and circuit breaker for new batch
-            self.analyzer_agent.batch_tokens = {"input": 0, "output": 0}
-            self.analyzer_agent.consecutive_failures = 0
-
-            analyses = []
-            analyses_by_arxiv_id = {}  # Map arxiv_id to analysis for ordering
-            completed_count = 0
-
-            # Parallel analysis with streaming updates
-            max_workers = min(4, len(papers))
-            logger.info(f"Analyzing {len(papers)} papers with {max_workers} parallel workers")
-
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Submit all papers for analysis
-                future_to_paper = {
-                    executor.submit(self.analyzer_agent.analyze_paper, paper): paper
-                    for paper in papers
-                }
-
-                # Collect results as they complete and yield updates
-                for future in as_completed(future_to_paper):
-                    paper = future_to_paper[future]
-                    try:
-                        analysis = future.result()
-                        analyses_by_arxiv_id[paper.arxiv_id] = analysis
-                        completed_count += 1
-                        logger.info(f"Completed analysis {completed_count}/{len(papers)}: {paper.arxiv_id}")
-
-                        # Reconstruct analyses list in original paper order
-                        ordered_analyses = [
-                            analyses_by_arxiv_id[p.arxiv_id]
-                            for p in papers
-                            if p.arxiv_id in analyses_by_arxiv_id
-                        ]
-
-                        # Yield progressive update
-                        papers_df = self._format_papers_partial(papers, ordered_analyses, completed_count)
-                        analysis_html = self._format_analysis_partial(papers, ordered_analyses)
-                        yield (papers_df, analysis_html, empty_html, empty_html, empty_html)
-
-                    except Exception as e:
-                        error_msg = f"Failed to analyze paper {paper.arxiv_id}: {str(e)}"
-                        logger.error(error_msg)
-                        state["errors"].append(error_msg)
-                        # Create failed analysis placeholder
-                        from utils.schemas import Analysis
-                        analyses_by_arxiv_id[paper.arxiv_id] = Analysis(
-                            paper_id=paper.arxiv_id,
-                            methodology="Analysis failed",
-                            key_findings=[],
-                            conclusions="",
-                            limitations=[],
-                            main_contributions=[],
-                            confidence_score=0.0
-                        )
-                        completed_count += 1
-
-            # Reconstruct final ordered analyses
-            analyses = [analyses_by_arxiv_id[p.arxiv_id] for p in papers]
-            state["analyses"] = analyses
-
-            # Accumulate batch tokens to state
-            state["token_usage"]["input_tokens"] += self.analyzer_agent.batch_tokens["input"]
-            state["token_usage"]["output_tokens"] += self.analyzer_agent.batch_tokens["output"]
-            logger.info(f"Total analyzer batch tokens: {self.analyzer_agent.batch_tokens['input']} input, "
-                       f"{self.analyzer_agent.batch_tokens['output']} output")
-
-            logger.info(f"=== Analyzer Agent Completed: {len(analyses)} analyses ===")
-
-            # ==== STEP 3: Filter Low Confidence ====
-            logger.info("=== Running Filter Node ===")
-            state = self._filter_low_confidence_node(state)
-
-            if not state.get("filtered_analyses"):
-                logger.error("All analyses failed")
-                error_msg = "All paper analyses failed - cannot generate synthesis"
-                yield self._format_error([error_msg])
-                return
-
-            # ==== STEP 4: Synthesis Agent ====
-            progress(0.7, desc="Synthesizing findings across papers...")
-            logger.info("=== Running Synthesis Agent ===")
-            state = self._synthesis_node(state)
-
-            # Yield with synthesis results
-            papers_df = self._format_papers_partial(papers, analyses, len(papers))
-            analysis_html = self._format_analysis_partial(papers, analyses)
-
-            # Create temporary validated_output for formatting synthesis
-            from utils.schemas import ValidatedOutput
-            temp_validated = ValidatedOutput(
-                query=query,
-                synthesis=state["synthesis"],
-                citations=[],
-                retrieved_chunks=[],
-                processing_time=0,
-                cost_estimate=0,
-                token_usage=state["token_usage"]
-            )
-            synthesis_html = self._format_synthesis_output(papers, temp_validated)
-            yield (papers_df, analysis_html, synthesis_html, empty_html, empty_html)
-
-            # ==== STEP 5: Citation Agent ====
-            progress(0.9, desc="Validating and generating citations...")
-            logger.info("=== Running Citation Agent ===")
-            state = self._citation_node(state)
-
-            # Calculate processing time
-            state["processing_time"] = time.time() - start_time
-
-            progress(1.0, desc="Complete!")
 
             # Check for validated output
-            if not state.get("validated_output"):
+            if not final_state.get("validated_output"):
                 logger.warning("Workflow completed but no validated output")
-                yield self._format_error(state.get("errors", ["Unknown error occurred"]))
+                yield self._format_error(final_state.get("errors", ["Unknown error occurred"]))
                 return
+
+            # Processing time is now calculated in finalize_node
+            progress(1.0, desc="Complete!")
 
             # Cache the result
             cache_data = {
-                "papers": [p.model_dump(mode='json') for p in state["papers"]],
-                "analyses": [a.model_dump(mode='json') for a in state["analyses"]],
-                "validated_output": state["validated_output"].model_dump(mode='json')
+                "papers": [p.model_dump(mode='json') for p in final_state["papers"]],
+                "analyses": [a.model_dump(mode='json') for a in final_state["analyses"]],
+                "validated_output": final_state["validated_output"].model_dump(mode='json')
             }
             self.cache.set(query, query_embedding, cache_data, category)
 
             # Format final output
             result = {
-                "papers": state["papers"],
-                "analyses": state["analyses"],
-                "validated_output": state["validated_output"]
+                "papers": final_state["papers"],
+                "analyses": final_state["analyses"],
+                "validated_output": final_state["validated_output"]
             }
             yield self._format_output(result)
 
