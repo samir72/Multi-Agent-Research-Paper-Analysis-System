@@ -138,8 +138,8 @@ class PricingConfig:
         # Default fallback
         logger.warning(f"Model {model_name} not found in config, using gpt-4o-mini defaults")
         return {
-            "input_price_per_1m": 0.08,
-            "output_price_per_1m": 0.32
+            "input_price_per_1m": 0.15,
+            "output_price_per_1m": 0.60
         }
 
     def get_embedding_pricing(self, embedding_model: str) -> float:
