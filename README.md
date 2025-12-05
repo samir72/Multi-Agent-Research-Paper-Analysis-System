@@ -387,6 +387,7 @@ The system implements multiple techniques to minimize hallucinations:
 - **Configurable Pricing System**: `config/pricing.json` for easy model switching
   - Supports gpt-4o-mini ($0.15/$0.60 per 1M tokens)
   - Supports phi-4-multimodal-instruct ($0.08/$0.32 per 1M tokens)
+  - Default fallback pricing for unknown models ($0.15/$0.60 per 1M tokens)
   - Environment variable overrides for testing and custom pricing
 - **Thread-safe Token Tracking**: Accurate counts across parallel processing
 - **Request Batching**: Batch embeddings for efficiency
@@ -820,6 +821,11 @@ For issues, questions, or feature requests, please:
   - Progress tracking still functional via local variables
   - See `BUGFIX_MSGPACK_SERIALIZATION.md` for details
 
+**🔧 Improvements:**
+- ✅ **Updated Default Fallback Pricing** - More conservative cost estimates for unknown models
+  - Increased from $0.08/$0.32 to $0.15/$0.60 per 1M tokens (input/output)
+  - Provides better safety margin when model pricing is not found in configuration
+
 **📦 Dependencies Added:**
 - ✅ `langgraph>=0.2.0` - Graph-based workflow orchestration
 - ✅ `langfuse>=2.0.0` - Observability platform
@@ -1174,6 +1180,7 @@ For issues, questions, or feature requests, please:
   - New `config/pricing.json` with pricing for gpt-4o-mini, gpt-4o, phi-4-multimodal-instruct
   - New `utils/config.py` with PricingConfig class
   - Support for multiple embedding models (text-embedding-3-small, text-embedding-3-large)
+  - Updated default fallback pricing ($0.15/$0.60 per 1M tokens) for unknown models
 - ✅ **Environment variable overrides** - Easy testing and custom pricing
   - `PRICING_INPUT_PER_1M` - Override input token pricing for all models
   - `PRICING_OUTPUT_PER_1M` - Override output token pricing for all models
