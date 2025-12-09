@@ -1,5 +1,5 @@
 # Core Dependencies
-gradio>=4.0.0
+gradio>=6.0.0,<7.0.0
 langchain>=0.1.0
 langchain-openai>=0.0.5
 langgraph>=0.2.0

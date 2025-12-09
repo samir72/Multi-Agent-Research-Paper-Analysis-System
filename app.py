@@ -711,7 +711,7 @@ def analyze_research(query, category, num_papers, progress=gr.Progress()):
 
 
 # Create Gradio interface
-with gr.Blocks(title="Research Paper Analyzer", theme=gr.themes.Soft()) as demo:
+with gr.Blocks() as demo:
     gr.Markdown("""
     # Research Paper Analyzer
     ### Multi-Agent System for Analyzing Academic Papers from arXiv
@@ -782,4 +782,9 @@ with gr.Blocks(title="Research Paper Analyzer", theme=gr.themes.Soft()) as demo:
 
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.launch(
+        title="Research Paper Analyzer",
+        theme=gr.themes.Soft(),
+        server_name="0.0.0.0",
+        server_port=7860
+    )
