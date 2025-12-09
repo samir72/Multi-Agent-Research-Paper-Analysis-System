@@ -4,7 +4,7 @@ emoji: 📚
 colorFrom: blue
 colorTo: green
 sdk: gradio
-sdk_version: 5.49.1
+sdk_version: 6.0.2
 app_file: app.py
 pinned: false
 license: mit
@@ -14,7 +14,7 @@ license: mit
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Gradio](https://img.shields.io/badge/Gradio-5.49.1-orange)](https://gradio.app/)
+[![Gradio](https://img.shields.io/badge/Gradio-6.0.2-orange)](https://gradio.app/)
 [![Azure OpenAI](https://img.shields.io/badge/Azure-OpenAI-0078D4)](https://azure.microsoft.com/en-us/products/ai-services/openai-service)
 [![Sync to HF Space](https://github.com/samir72/Multi-Agent-Research-Paper-Analysis-System/actions/workflows/sync-to-hf-space.yml/badge.svg)](https://github.com/samir72/Multi-Agent-Research-Paper-Analysis-System/actions/workflows/sync-to-hf-space.yml)
 
@@ -121,7 +121,7 @@ User Query → Retriever → [Has papers?]
 - **Observability**: LangFuse for automatic tracing, performance analytics, and cost tracking
 - **Agent Framework**: Generator-based streaming workflow with progressive UI updates
 - **Parallel Processing**: ThreadPoolExecutor (4 concurrent workers) with as_completed for streaming
-- **UI**: Gradio 5.49.1 with tabbed interface and real-time updates
+- **UI**: Gradio 6.0.2 with tabbed interface and real-time updates
 - **Data Source**: arXiv API (direct) or FastMCP/Legacy MCP server (optional, auto-start)
 - **MCP Integration**: FastMCP server with auto-start, intelligent fallback (MCP → Direct API)
 - **Testing**: pytest with comprehensive test suite (96 tests, pytest-asyncio for async tests)
@@ -783,7 +783,26 @@ For issues, questions, or feature requests, please:
 
 ## Changelog
 
-### Version 2.6 - January 2025 (Latest)
+### Version 2.7 - December 2025 (Latest)
+
+**🔧 Gradio 6.0 Migration:**
+- ✅ **Updated to Gradio 6.0.2** - Migrated from Gradio 5.49.1 to resolve HuggingFace Spaces deployment error
+  - Fixed `TypeError: BlockContext.__init__() got an unexpected keyword argument 'theme'`
+  - Moved `theme` and `title` parameters from `gr.Blocks()` constructor to `demo.launch()` method
+  - Follows official [Gradio 6 Migration Guide](https://www.gradio.app/main/guides/gradio-6-migration-guide)
+  - Pinned Gradio version to `>=6.0.0,<7.0.0` to prevent future breaking changes
+- ✅ **Zero Breaking Changes** - All UI components and functionality remain identical
+  - ✅ All components (Textbox, Dropdown, Slider, Button, Dataframe, HTML, Tabs) compatible
+  - ✅ Event handlers (`.click()`) work unchanged
+  - ✅ Progress tracking (`gr.Progress()`) works unchanged
+  - ✅ Theme (Soft) and title preserved
+- ✅ **Deployment Fix** - Application now runs successfully on HuggingFace Spaces with Gradio 6.0.2
+
+**Files Modified:**
+- `app.py`: Updated `gr.Blocks()` and `demo.launch()` calls
+- `requirements.txt`: Pinned Gradio to 6.x version range
+
+### Version 2.6 - January 2025
 
 **🏗️ LangGraph Orchestration + LangFuse Observability:**
 - ✅ **LangGraph Workflow** - Professional workflow orchestration framework
