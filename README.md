@@ -789,6 +789,7 @@ For issues, questions, or feature requests, please:
 - ✅ **Updated to Gradio 6.0.2** - Migrated from Gradio 5.49.1 to resolve HuggingFace Spaces deployment error
   - Fixed `TypeError: BlockContext.__init__() got an unexpected keyword argument 'theme'`
   - Moved `theme` and `title` parameters from `gr.Blocks()` constructor to `demo.launch()` method
+  - Fully compliant with Gradio 6.0 API (both parameters now in launch() method)
   - Follows official [Gradio 6 Migration Guide](https://www.gradio.app/main/guides/gradio-6-migration-guide)
   - Pinned Gradio version to `>=6.0.0,<7.0.0` to prevent future breaking changes
 - ✅ **Zero Breaking Changes** - All UI components and functionality remain identical
