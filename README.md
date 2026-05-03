@@ -155,7 +155,7 @@ pip install -r requirements.txt
 pip install -c constraints.txt -r requirements.txt
 ```
 
-**Note on MCP Dependencies**: The `spaces` package (from Gradio) may attempt to downgrade `mcp` to version 1.10.1, which conflicts with `fastmcp` requirements (mcp>=1.17.0). The app automatically fixes this on Hugging Face Spaces. For local development, use Option 2 or 3 if you encounter MCP dependency conflicts.
+**Note on MCP Dependencies**: `gradio[mcp]` pins an older `mcp` version that conflicts with `fastmcp`. This project uses `gradio[oauth]` (without the `mcp` extra) and allows pip to resolve the `mcp` version freely (`mcp>=1.0.0`), since arXiv MCP access is handled by FastMCP directly — not Gradio's built-in MCP feature.
 
 3. Configure environment variables:
 ```bash
@@ -783,7 +783,18 @@ For issues, questions, or feature requests, please:
 
 ## Changelog
 
-### Version 2.7 - December 2025 (Latest)
+### Version 2.8 - May 2026 (Latest)
+
+**🔧 Dependency Conflict Fixes:**
+- ✅ **Removed `gradio[mcp]` extra** - Switched to `gradio[oauth]` to prevent Gradio from pinning an older `mcp` version incompatible with `fastmcp`. Gradio's built-in MCP feature is not used here; arXiv MCP access goes through FastMCP directly.
+- ✅ **Unpinned `mcp` version** - Changed `mcp==1.17.0` to `mcp>=1.0.0` so pip can resolve a compatible version across `gradio`, `fastmcp`, and other packages without hard-conflict errors.
+
+**Files Modified:**
+- `requirements.txt`: `gradio[oauth]>=6.0.0,<7.0.0`, `mcp>=1.0.0`
+
+---
+
+### Version 2.7 - December 2025
 
 **🔧 Gradio 6.0 Migration:**
 - ✅ **Updated to Gradio 6.0.2** - Migrated from Gradio 5.49.1 to resolve HuggingFace Spaces deployment error
