@@ -29,7 +29,7 @@ def test_extract_pdf_url():
 
     # Fetch the paper using arxiv library
     search = arxiv.Search(id_list=[paper_id])
-    result = next(search.results())
+    result = next(arxiv.Client().results(search))
 
     # Show what arxiv library returns
     print(f"\nPaper ID: {result.entry_id.split('/')[-1]}")
@@ -94,7 +94,7 @@ def test_fastmcp_download_logic():
 
     # Simulate the download_paper logic
     search = arxiv.Search(id_list=[paper_id])
-    result = next(search.results())
+    result = next(arxiv.Client().results(search))
 
     # This is what was failing: result.pdf_url was None
     print(f"\nOld approach (BROKEN):")

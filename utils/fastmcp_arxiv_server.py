@@ -91,6 +91,7 @@ class ArxivFastMCPServer:
         self.storage_path = Path(storage_path or os.getenv("MCP_ARXIV_STORAGE_PATH", "data/mcp_papers"))
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self.server_port = server_port
+        self.arxiv_client = arxiv.Client()
 
         # Initialize FastMCP server
         self.mcp = FastMCP("arxiv-server")
@@ -153,8 +154,10 @@ class ArxivFastMCPServer:
                     sort_by=sort_criterion
                 )
 
+                # Search.results() is deprecated/removed in newer arxiv
+                # releases in favor of Client.results()
                 papers = []
-                for result in search.results():
+                for result in self.arxiv_client.results(search):
                     paper_data = {
                         "id": result.entry_id.split('/')[-1],
                         "title": result.title,
@@ -200,7 +203,7 @@ class ArxivFastMCPServer:
 
                 # Get paper metadata to get PDF URL
                 search = arxiv.Search(id_list=[paper_id])
-                result = next(search.results())
+                result = next(self.arxiv_client.results(search))
 
                 # Extract PDF URL using helper (handles arxiv v2.2.0 breaking change)
                 pdf_url = _extract_pdf_url(result)

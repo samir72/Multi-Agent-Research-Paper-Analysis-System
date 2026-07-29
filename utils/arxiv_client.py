@@ -70,6 +70,7 @@ class ArxivClient:
         """
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.client = arxiv.Client()
 
     @retry(
         stop=stop_after_attempt(3),
@@ -112,9 +113,10 @@ class ArxivClient:
                 sort_by=sort_by
             )
 
-            # Fetch results
+            # Fetch results (Search.results() is deprecated/removed in newer
+            # arxiv releases in favor of Client.results())
             papers = []
-            for result in search.results():
+            for result in self.client.results(search):
                 paper = Paper(
                     arxiv_id=result.entry_id.split('/')[-1],
                     title=result.title,
@@ -158,7 +160,7 @@ class ArxivClient:
 
             # Download using arxiv library
             search = arxiv.Search(id_list=[paper.arxiv_id])
-            result = next(search.results())
+            result = next(self.client.results(search))
             result.download_pdf(dirpath=str(self.cache_dir), filename=f"{paper.arxiv_id}.pdf")
 
             logger.info(f"Downloaded paper to {pdf_path}")
