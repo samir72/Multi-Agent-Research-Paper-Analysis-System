@@ -9,7 +9,12 @@ openai>=1.0.0
 
 # Observability
 # Note: langfuse includes OpenAI integration - no separate langfuse-openai package needed
-langfuse>=2.0.0
+# Pinned to the v3 SDK line (OTEL-based rewrite; utils/langfuse_client.py uses
+# v3-only APIs like start_as_current_span/update_current_trace/auth_check).
+# An unbounded >=2.0.0 constraint let some environments resolve a pre-v3
+# release lacking these methods, crashing every workflow run at startup
+# with "'Langfuse' object has no attribute 'start_as_current_span'".
+langfuse>=3.10.0,<4.0.0
 
 # Vector Store & Embeddings
 chromadb>=0.4.0

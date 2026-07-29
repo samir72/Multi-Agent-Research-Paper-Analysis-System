@@ -240,10 +240,13 @@ def workflow_trace(
     attaches to a single LangFuse trace instead of becoming disconnected
     top-level traces.
 
-    Safely no-ops (yields None) when LangFuse is disabled/unavailable.
-    Exceptions raised inside the `with` block are NOT swallowed here —
-    they propagate normally so existing caller-side error handling is
-    unaffected.
+    Safely no-ops (yields None) when LangFuse is disabled/unavailable, OR
+    when the installed langfuse SDK doesn't support start_as_current_span
+    (e.g. a pre-v3 install resolved by an unpinned environment) — a
+    tracing-layer failure must never take down the actual workflow.
+    Exceptions raised by the CALLER's code inside the `with` block (e.g.
+    a real error from app.invoke()) are NOT swallowed and propagate
+    normally so existing caller-side error handling is unaffected.
 
     Usage:
         with workflow_trace("research_workflow_run", session_id=thread_id):
@@ -258,7 +261,14 @@ def workflow_trace(
         yield None
         return
 
-    with client.start_as_current_span(name=name, metadata=metadata) as span:
+    try:
+        span_cm = client.start_as_current_span(name=name, metadata=metadata)
+    except Exception as e:
+        logger.error(f"Failed to start LangFuse root span '{name}' (tracing disabled for this run): {e}")
+        yield None
+        return
+
+    with span_cm as span:
         try:
             client.update_current_trace(session_id=session_id, user_id=user_id, metadata=metadata)
         except Exception as e:
