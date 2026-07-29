@@ -10,6 +10,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from utils.langgraph_state import AgentState
+from utils.langfuse_client import workflow_trace
 from orchestration.nodes import (
     retriever_node,
     analyzer_node,
@@ -225,7 +226,17 @@ def run_workflow(
             return _run_workflow_streaming(app, initial_state, thread_id)
         else:
             # Non-streaming execution - just return final state
-            final_state = app.invoke(initial_state, config=config)
+            with workflow_trace(
+                "research_workflow_run",
+                session_id=thread_id,
+                user_id=initial_state.get("user_id"),
+                metadata={
+                    "query": initial_state.get("query"),
+                    "category": initial_state.get("category"),
+                    "num_papers": initial_state.get("num_papers"),
+                },
+            ):
+                final_state = app.invoke(initial_state, config=config)
             logger.info("Workflow execution completed")
             return final_state
 

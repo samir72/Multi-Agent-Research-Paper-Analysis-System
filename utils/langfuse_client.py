@@ -5,6 +5,7 @@ import logging
 import os
 from typing import Optional, Callable, Any
 from functools import wraps
+from contextlib import contextmanager
 
 from utils.config import get_langfuse_config
 
@@ -51,6 +52,40 @@ def initialize_langfuse():
         logger.error(f"Failed to initialize LangFuse: {e}")
         _langfuse_enabled = False
         return None
+
+
+def check_langfuse_auth() -> tuple[bool, str]:
+    """
+    Perform a live credential check against the LangFuse API.
+
+    Builds a short-lived client independent of the module-level singleton,
+    so it can be called standalone (e.g. from a CLI) without requiring
+    initialize_langfuse() to have run first, and without mutating global state.
+
+    Returns:
+        (ok, message) — ok is True only if the API confirms the keys are valid.
+    """
+    config = get_langfuse_config()
+
+    if not config.public_key or not config.secret_key:
+        return False, "LANGFUSE_PUBLIC_KEY and/or LANGFUSE_SECRET_KEY not set"
+
+    try:
+        from langfuse import Langfuse
+
+        client = Langfuse(**config.get_init_params())
+
+        if not hasattr(client, "auth_check"):
+            return False, "Installed langfuse SDK is too old (missing auth_check()). Try: pip install -U langfuse"
+
+        if client.auth_check():
+            return True, f"Credentials valid for host {config.host}"
+        return False, "auth_check() returned False — keys did not authenticate"
+
+    except ImportError:
+        return False, "langfuse package not installed. Install with: pip install langfuse"
+    except Exception as e:
+        return False, str(e)
 
 
 def get_langfuse_client():
@@ -101,74 +136,55 @@ def observe(
     as_type: str = "span",
 ):
     """
-    Decorator to trace function execution with LangFuse.
+    Decorator to trace function execution with LangFuse (v3 SDK).
 
     Args:
         name: Optional custom name for the span/generation
         capture_input: Whether to capture function input
         capture_output: Whether to capture function output
-        as_type: Type of observation ("span", "generation", "event")
+        as_type: Type of observation ("span", "generation", "agent", "tool", ...)
 
     Usage:
         @observe(name="retriever_agent", as_type="span")
         def retriever_node(state: AgentState) -> AgentState:
             return retriever_agent.run(state)
+
+    Note: wraps with LangFuse's real `observe` decorator at decoration time
+    (safe — v3 resolves its client lazily per-call), but the enable/disable
+    check happens inside the returned wrapper, evaluated on every call. This
+    matters because `@observe(...)` is applied to agent methods and node
+    functions at MODULE IMPORT time, which happens before
+    initialize_langfuse() runs during app startup — gating at decoration
+    time would permanently disable tracing regardless of configuration.
     """
 
     def decorator(func: Callable) -> Callable:
-        # If LangFuse not enabled, return original function
-        if not is_langfuse_enabled():
+        try:
+            from langfuse import observe as langfuse_observe
+        except ImportError:
+            logger.warning("LangFuse package not installed. '%s' will run without tracing.", func.__name__)
             return func
 
         try:
-            from langfuse.decorators import langfuse_context, observe as langfuse_observe
-
-            # Use the actual LangFuse decorator
-            return langfuse_observe(
-                name=name or func.__name__, capture_input=capture_input, capture_output=capture_output, as_type=as_type
+            traced_func = langfuse_observe(
+                name=name or func.__name__,
+                as_type=as_type,
+                capture_input=capture_input,
+                capture_output=capture_output,
             )(func)
-
-        except ImportError:
-            logger.warning("LangFuse decorators not available. Function will run without tracing.")
-            return func
         except Exception as e:
-            logger.error(f"Error applying LangFuse decorator: {e}")
+            logger.error(f"Error applying LangFuse @observe to '{func.__name__}': {e}")
             return func
+
+        @wraps(func)
+        def gated_wrapper(*args, **kwargs):
+            if is_langfuse_enabled():
+                return traced_func(*args, **kwargs)
+            return func(*args, **kwargs)
+
+        return gated_wrapper
 
     return decorator
-
-
-def start_trace(
-    name: str,
-    user_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    metadata: Optional[dict] = None,
-) -> Optional[Any]:
-    """
-    Start a new LangFuse trace.
-
-    Args:
-        name: Trace name
-        user_id: Optional user identifier
-        session_id: Optional session identifier
-        metadata: Optional metadata dictionary
-
-    Returns:
-        Trace object or None if LangFuse not enabled
-    """
-    if not is_langfuse_enabled():
-        return None
-
-    try:
-        client = get_langfuse_client()
-        trace = client.trace(name=name, user_id=user_id, session_id=session_id, metadata=metadata)
-
-        logger.debug(f"Started trace: {name} (session: {session_id})")
-        return trace
-
-    except Exception as e:
-        logger.error(f"Failed to start LangFuse trace: {e}")
-        return None
 
 
 def flush_langfuse():
@@ -210,29 +226,41 @@ def shutdown_langfuse():
 
 
 # Context manager for scoped tracing
-class trace_context:
+@contextmanager
+def workflow_trace(
+    name: str,
+    session_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    metadata: Optional[dict] = None,
+):
     """
-    Context manager for LangFuse trace.
+    Open one root span for an entire workflow run and tag it with
+    session_id/user_id so every nested @observe span/generation created
+    during the `with` block (including auto-instrumented OpenAI calls)
+    attaches to a single LangFuse trace instead of becoming disconnected
+    top-level traces.
+
+    Safely no-ops (yields None) when LangFuse is disabled/unavailable.
+    Exceptions raised inside the `with` block are NOT swallowed here —
+    they propagate normally so existing caller-side error handling is
+    unaffected.
 
     Usage:
-        with trace_context("workflow", session_id="123") as trace:
-            # Your code here
-            pass
+        with workflow_trace("research_workflow_run", session_id=thread_id):
+            final_state = app.invoke(initial_state, config=config)
     """
+    if not is_langfuse_enabled():
+        yield None
+        return
 
-    def __init__(self, name: str, user_id: Optional[str] = None, session_id: Optional[str] = None, metadata: Optional[dict] = None):
-        self.name = name
-        self.user_id = user_id
-        self.session_id = session_id
-        self.metadata = metadata
-        self.trace = None
+    client = get_langfuse_client()
+    if client is None:
+        yield None
+        return
 
-    def __enter__(self):
-        self.trace = start_trace(self.name, self.user_id, self.session_id, self.metadata)
-        return self.trace
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is not None:
-            logger.error(f"Trace {self.name} ended with error: {exc_val}")
-        flush_langfuse()
-        return False
+    with client.start_as_current_span(name=name, metadata=metadata) as span:
+        try:
+            client.update_current_trace(session_id=session_id, user_id=user_id, metadata=metadata)
+        except Exception as e:
+            logger.error(f"Failed to tag LangFuse trace '{name}': {e}")
+        yield span

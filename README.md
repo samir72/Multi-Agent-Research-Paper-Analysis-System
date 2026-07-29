@@ -182,7 +182,7 @@ Optional:
 - `FASTMCP_SERVER_PORT`: Port for FastMCP server (default: `5555`)
 
 **LangFuse Observability** (Optional):
-- `LANGFUSE_ENABLED`: Enable LangFuse tracing (default: `false`)
+- `LANGFUSE_ENABLED`: Enable LangFuse tracing (default: `true`; set to `false` to disable)
 - `LANGFUSE_PUBLIC_KEY`: Your LangFuse public key (get from https://cloud.langfuse.com)
 - `LANGFUSE_SECRET_KEY`: Your LangFuse secret key
 - `LANGFUSE_HOST`: LangFuse host URL (default: `https://cloud.langfuse.com`)
@@ -190,6 +190,12 @@ Optional:
 - `LANGFUSE_TRACE_RAG`: Trace RAG operations (default: `true`)
 - `LANGFUSE_FLUSH_AT`: Batch size for flushing traces (default: `15`)
 - `LANGFUSE_FLUSH_INTERVAL`: Flush interval in seconds (default: `10`)
+
+**Validating LangFuse Keys**: Before running the app, confirm your keys actually authenticate:
+```bash
+python scripts/validate_langfuse_keys.py
+```
+This performs a live check against the LangFuse API (not just a presence check) and reports exactly why authentication failed if it did (missing keys, invalid keys, unreachable host).
 
 **Note**: Pricing is configured in `config/pricing.json` with support for gpt-4o-mini, gpt-4o, and phi-4-multimodal-instruct. Environment variables override JSON settings.
 
@@ -335,6 +341,8 @@ Multi-Agent-Research-Paper-Analysis-System/
 │   └── langfuse_client.py         # LangFuse client and helpers (NEW v2.6)
 ├── config/
 │   └── pricing.json               # Model pricing configuration
+├── scripts/
+│   └── validate_langfuse_keys.py  # Live LangFuse API key validation CLI (NEW v2.9)
 ├── tests/
 │   ├── __init__.py
 │   ├── test_analyzer.py           # Unit tests for analyzer agent (24 tests)
@@ -397,15 +405,16 @@ The system implements multiple techniques to minimize hallucinations:
 - **LangFuse Cost Analytics**: Per-agent cost attribution and optimization insights
 - **Target**: <$0.50 per analysis session (5 papers with gpt-4o-mini)
 
-### LangFuse Observability (v2.6)
+### LangFuse Observability (v2.6, SDK migrated to v3 in v2.9)
 
-The system includes comprehensive observability powered by LangFuse:
+The system includes comprehensive observability powered by LangFuse, built on the **LangFuse v3 SDK** (OpenTelemetry-based).
 
 **Automatic Tracing:**
 - All agent executions automatically traced with `@observe` decorator
 - LLM calls captured with prompts, completions, tokens, and costs
 - RAG operations tracked (embeddings, vector search)
 - Workflow state transitions logged
+- **Single trace per query**: one root `research_workflow_run` trace per workflow execution (tagged with session ID), with every agent/node span and LLM generation correctly nested underneath — including calls made from the analyzer's parallel `ThreadPoolExecutor` workers, which require explicit `contextvars` propagation to nest correctly (v2.9)
 
 **Performance Analytics:**
 ```python
@@ -783,7 +792,34 @@ For issues, questions, or feature requests, please:
 
 ## Changelog
 
-### Version 2.8 - May 2026 (Latest)
+### Version 2.9 - July 2026 (Latest)
+
+**🐛 Critical Fix: LangFuse Traces Not Appearing in Dashboard**
+
+`requirements.txt` pinned `langfuse>=2.0.0`, so pip installed the latest available release — **LangFuse SDK 3.x**, a ground-up OpenTelemetry-based rewrite that removed the v2 API (`langfuse.decorators`, `client.trace()`) the codebase was written against, with no deprecation shim. All tracing calls were silently swallowed by broad `except` blocks, so LangFuse API key validation succeeded while **zero traces were ever actually created** — with no errors surfaced anywhere.
+
+- ✅ **Migrated `utils/langfuse_client.py` to the v3 API**
+  - `observe()` now wraps the real v3 `langfuse.observe` decorator, with the enabled/disabled check moved from decoration-time to call-time (agent methods are decorated at *module import time*, before `initialize_langfuse()` runs at app startup — gating at decoration time silently disabled tracing regardless of configuration)
+  - Removed dead v2-only code (`start_trace()`, `trace_context`) and replaced with `workflow_trace()`, a context manager that opens one root span per workflow run via `start_as_current_span()` and tags it with `session_id`/`user_id` via `update_current_trace()`
+- ✅ **One trace per query, fully nested** — `orchestration/workflow_graph.py::run_workflow()` now wraps `app.invoke(...)` in `workflow_trace(...)`, so all 6 LangGraph node spans, all 4 agent-level generations, and every RAG/LLM call nest under a single `research_workflow_run` trace instead of appearing as disconnected top-level traces
+- ✅ **Fixed thread-pool context propagation** (`agents/analyzer.py`) — `ThreadPoolExecutor` does not propagate `contextvars` into worker threads by default, which orphaned the analyzer's RAG retrieval spans and LLM generation calls even after the v3 migration. Fixed by explicitly running each submitted task inside `contextvars.copy_context()`
+- ✅ **Verified end-to-end**, not just by inspection — ran real queries through the app and fetched the resulting trace's full observation tree directly via the LangFuse API, confirming every span (`retriever_agent` → `retriever_agent_run` → `generate_embeddings_batch` → `OpenAI-embedding`; `analyzer_agent` → `analyzer_agent_run` → `rag_retrieve` ×4 → `OpenAI-generation`; `synthesis_agent`, `citation_agent`, `finalize_node`) correctly chains up to the root trace
+
+**🆕 New: LangFuse Key Validation Script**
+- ✅ `scripts/validate_langfuse_keys.py` — standalone CLI that performs a **live** check against the LangFuse API (`client.auth_check()`) rather than just checking that keys are present, with clear diagnosis for missing keys, invalid keys (401), access-denied (403), and unreachable host errors
+- ✅ New `check_langfuse_auth()` helper added to `utils/langfuse_client.py`, reusable independently of the module-level client singleton
+
+**Files Modified:**
+- `utils/langfuse_client.py`: v3 API migration (`observe()`, `workflow_trace()`, `check_langfuse_auth()`)
+- `orchestration/workflow_graph.py`: wraps `app.invoke()` in `workflow_trace(...)`
+- `agents/analyzer.py`: propagates `contextvars` into `ThreadPoolExecutor` workers
+- `app.py`: startup log now reflects actual LangFuse init success/failure instead of always claiming success
+- `.env.example`: documented the key validation script
+- `scripts/validate_langfuse_keys.py`: new diagnostic script
+
+---
+
+### Version 2.8 - May 2026
 
 **🔧 Dependency Conflict Fixes:**
 - ✅ **Removed `gradio[mcp]` extra** - Switched to `gradio[oauth]` to prevent Gradio from pinning an older `mcp` version incompatible with `fastmcp`. Gradio's built-in MCP feature is not used here; arXiv MCP access goes through FastMCP directly.

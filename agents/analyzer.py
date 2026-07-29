@@ -5,6 +5,7 @@ import os
 import json
 import logging
 import threading
+import contextvars
 from typing import Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import AzureOpenAI
@@ -338,9 +339,14 @@ CRITICAL JSON FORMATTING RULES:
             failed_papers = []
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Submit all papers for analysis
+                # Submit all papers for analysis. ThreadPoolExecutor does not
+                # propagate contextvars into worker threads by default, which
+                # breaks LangFuse/OTEL span nesting (the active
+                # analyzer_agent_run span wouldn't be visible to code running
+                # in the worker) — copy the current context explicitly so
+                # each worker sees the same active trace/span.
                 future_to_paper = {
-                    executor.submit(self.analyze_paper, paper): paper
+                    executor.submit(contextvars.copy_context().run, self.analyze_paper, paper): paper
                     for paper in papers
                 }
 

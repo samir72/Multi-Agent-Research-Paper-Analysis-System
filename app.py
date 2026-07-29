@@ -123,9 +123,12 @@ class ResearchPaperAnalyzer:
         logger.info("Initializing Research Paper Analyzer...")
 
         # Initialize LangFuse observability
-        initialize_langfuse()
+        langfuse_client = initialize_langfuse()
         instrument_openai()  # Auto-trace all OpenAI calls
-        logger.info("LangFuse observability initialized")
+        if langfuse_client is not None:
+            logger.info("LangFuse observability initialized")
+        else:
+            logger.info("LangFuse observability not active (disabled or not configured)")
 
         # Configuration
         storage_path = os.getenv("MCP_ARXIV_STORAGE_PATH", "data/mcp_papers")
