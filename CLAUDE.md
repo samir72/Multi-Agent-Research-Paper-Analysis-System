@@ -251,6 +251,8 @@ ArxivClient uses tenacity for resilient API calls:
 - Exponential backoff (4s min, 10s max)
 - Applied to search_papers() and download_paper()
 
+**Important**: Use `arxiv.Client().results(search)`, never the deprecated `search.results()` shorthand. The `arxiv` package has removed `Search.results()` in some releases while keeping it (with a `DeprecationWarning`) in others — an unpinned `arxiv` version can silently break paper retrieval in one environment while working in another (this happened in production: HF Spaces resolved a version without `Search.results()`, while local dev had an older version that still had it). `ArxivClient` and `ArxivFastMCPServer` each hold a single shared `arxiv.Client()` instance (`self.client` / `self.arxiv_client`) — reuse it rather than constructing a new one per call.
+
 ### MCP (Model Context Protocol) Integration
 
 The system supports **optional** integration with arXiv MCP servers as an alternative to direct arXiv API access. **FastMCP is now the default MCP implementation** when `USE_MCP_ARXIV=true`.
@@ -391,12 +393,14 @@ When adding tests for other agents, follow the same pattern:
 
 ### LangFuse Integration
 
-The system automatically traces all agent executions and LLM calls when LangFuse is enabled:
+The system automatically traces all agent executions and LLM calls when LangFuse is enabled, built on the **LangFuse v3 SDK** (OpenTelemetry-based; pinned `langfuse>=3.10.0,<4.0.0` in `requirements.txt` — v3 removed the v2 API this code originally targeted, e.g. `langfuse.decorators`, `client.trace()`, so an unbounded version constraint can silently break tracing in a fresh environment while an already-installed older SDK keeps working locally).
 
 **Configuration** (`utils/langfuse_client.py`):
 - `initialize_langfuse()`: Initialize global LangFuse client at startup
 - `instrument_openai()`: Auto-trace all Azure OpenAI API calls
-- `@observe` decorator: Trace custom functions/spans
+- `@observe` decorator: Trace custom functions/spans, wrapping the real v3 `langfuse.observe`. The enabled/disabled check happens at **call time**, not decoration time — `@observe` is applied to agent methods at module import time, before `initialize_langfuse()` runs at app startup, so gating at decoration time would permanently disable tracing regardless of configuration.
+- `workflow_trace(name, session_id=None, user_id=None, metadata=None)`: Context manager that opens **one root span per workflow run** via `start_as_current_span()` and tags it with session/user via `update_current_trace()`. Wrapped around `app.invoke(...)` in `orchestration/workflow_graph.py::run_workflow()` so every node/agent span and LLM generation nests under a single trace instead of appearing as disconnected top-level traces. Safely no-ops (never raises) if the installed SDK lacks this method or tracing is disabled — a tracing failure must never crash the actual workflow.
+- `check_langfuse_auth()`: Live credential check against the LangFuse API (`client.auth_check()`), independent of the module-level singleton. Used by `scripts/validate_langfuse_keys.py` — run this before deploying to confirm keys actually authenticate, since presence of keys alone doesn't guarantee they're valid.
 - `flush_langfuse()`: Ensure all traces uploaded before shutdown
 
 **Automatic Tracing**:
@@ -404,6 +408,7 @@ The system automatically traces all agent executions and LLM calls when LangFuse
 - LLM calls automatically captured (prompt, completion, tokens, cost)
 - RAG operations traced (embeddings, vector search)
 - Workflow state transitions logged
+- **Thread-pool gotcha**: `contextvars` (which OTEL/LangFuse tracing relies on) are not propagated into new threads automatically. `AnalyzerAgent`'s `ThreadPoolExecutor` explicitly runs each submitted task inside `contextvars.copy_context()` for this reason — any new parallelized code path must do the same or its spans will be orphaned (see "Adding a new agent" below).
 
 ### Trace Querying (`observability/trace_reader.py`)
 
@@ -475,6 +480,7 @@ See `observability/README.md` for comprehensive documentation.
 3. Add node wrapper in `orchestration/nodes.py`
 4. Add node to workflow graph in `orchestration/workflow_graph.py`
 5. Update conditional routing if needed
+6. **If the agent parallelizes work with `ThreadPoolExecutor`** (see `AnalyzerAgent`), propagate tracing context into worker threads explicitly — `contextvars` (which LangFuse's OTEL-based tracing relies on) are not inherited by new threads automatically. Wrap submitted callables: `executor.submit(contextvars.copy_context().run, fn, *args)`. Without this, spans created inside worker threads become disconnected top-level traces instead of nesting under the current run.
 
 **Modifying chunking**:
 - Adjust `chunk_size` and `chunk_overlap` in PDFProcessor initialization
@@ -550,6 +556,9 @@ See `observability/README.md` for comprehensive documentation.
 - `utils/fastmcp_arxiv_server.py`: FastMCP server with auto-start
 - `utils/semantic_cache.py`: Query caching with embeddings
 
+### Scripts
+- `scripts/validate_langfuse_keys.py`: Standalone CLI — live LangFuse API key validation (`python scripts/validate_langfuse_keys.py`). Run before deploying to catch invalid/missing keys and SDK/host issues before they surface as silent tracing failures.
+
 ### Documentation
 - `CLAUDE.md`: This file - comprehensive developer guide
 - `README.md`: User-facing project documentation
@@ -558,6 +567,21 @@ See `observability/README.md` for comprehensive documentation.
 - `.env.example`: Environment variable template with all options
 
 ## Version History and Recent Changes
+
+### Version 2.9: LangFuse v3 SDK Migration + Production Dependency Fixes
+
+**Fixed:**
+- **LangFuse traces not appearing in dashboard** — `requirements.txt`'s unbounded `langfuse>=2.0.0` let pip resolve LangFuse v3, an OTEL-based rewrite that removed the v2 API (`langfuse.decorators`, `client.trace()`) `utils/langfuse_client.py` was written against, with every failure silently swallowed by broad `except` blocks. Migrated `observe()` and replaced `start_trace()`/`trace_context` (both dead code) with `workflow_trace()`, a context manager opening one root span per workflow run.
+- **`@observe` decoration-time gating bug** — the enabled/disabled check was evaluated when `@observe` was applied (at module import time, before `initialize_langfuse()` ever runs at startup), permanently disabling tracing regardless of config. Moved the check to call time.
+- **`ThreadPoolExecutor` orphaning spans** — `agents/analyzer.py`'s parallel paper analysis broke span nesting because `contextvars` aren't propagated into new threads by default. Fixed by submitting tasks via `contextvars.copy_context().run(...)`.
+- **HF Spaces crash: `'Langfuse' object has no attribute 'start_as_current_span'`** — pinned `langfuse>=3.10.0,<4.0.0` (preventing a repeat of the unbounded-version issue) and hardened `workflow_trace()` so a tracing-layer failure degrades to running the workflow untraced instead of crashing the entire request — the same lesson as the RAG/agent error-handling philosophy, now applied to the tracing layer itself.
+- **HF Spaces returning zero papers: `'Search' object has no attribute 'results'`** — unrelated to LangFuse, but the same root-cause pattern: unbounded `arxiv>=2.0.0` let a fresh install resolve a version that removed the deprecated `Search.results()` shorthand used in `utils/arxiv_client.py` and `utils/fastmcp_arxiv_server.py`. Migrated both to the non-deprecated `arxiv.Client().results(search)` API (each class now holds one shared `arxiv.Client()` instance).
+
+**Added:**
+- `scripts/validate_langfuse_keys.py` + `check_langfuse_auth()` — live API key validation (not just a presence check), run before deploying
+- Single-trace-per-query tracing: `research_workflow_run` root trace containing all node/agent spans and LLM generations properly nested, verified directly via the LangFuse API's trace observation tree (not just visual inspection)
+
+**Lesson reinforced**: unbounded `>=` version constraints on fast-moving dependencies (LangFuse, arxiv) let different environments (local dev vs. fresh HF Spaces build) silently resolve different major versions with breaking API changes. Prefer bounded ranges once a specific API surface is depended on, and — just as importantly — make failures in secondary systems (observability, tracing) degrade gracefully rather than take down the primary workflow.
 
 ### Version 2.6: LangGraph Orchestration + LangFuse Observability
 **Added:**

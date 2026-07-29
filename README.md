@@ -407,7 +407,7 @@ The system implements multiple techniques to minimize hallucinations:
 
 ### LangFuse Observability (v2.6, SDK migrated to v3 in v2.9)
 
-The system includes comprehensive observability powered by LangFuse, built on the **LangFuse v3 SDK** (OpenTelemetry-based).
+The system includes comprehensive observability powered by LangFuse, built on the **LangFuse v3 SDK** (OpenTelemetry-based, pinned `langfuse>=3.10.0,<4.0.0`).
 
 **Automatic Tracing:**
 - All agent executions automatically traced with `@observe` decorator
@@ -809,13 +809,31 @@ For issues, questions, or feature requests, please:
 - ✅ `scripts/validate_langfuse_keys.py` — standalone CLI that performs a **live** check against the LangFuse API (`client.auth_check()`) rather than just checking that keys are present, with clear diagnosis for missing keys, invalid keys (401), access-denied (403), and unreachable host errors
 - ✅ New `check_langfuse_auth()` helper added to `utils/langfuse_client.py`, reusable independently of the module-level client singleton
 
+**🐛 Follow-up Production Fix: HuggingFace Spaces Crash After Deploy**
+
+Deploying the above fix to HuggingFace Spaces immediately crashed every query with `'Langfuse' object has no attribute 'start_as_current_span'`. The unbounded `langfuse>=2.0.0` constraint let that fresh environment resolve a *different* LangFuse release than local dev's validated `3.10.0` — one missing the v3 method this code depends on — and the `AttributeError` propagated straight out of `workflow_trace()` into the workflow's error handler, failing the entire request instead of just disabling tracing.
+
+- ✅ **Pinned `langfuse>=3.10.0,<4.0.0`** in `requirements.txt` so a fresh install can't silently resolve an incompatible SDK line again
+- ✅ **Hardened `workflow_trace()`** so a failure to start the root span (missing/incompatible SDK method) is caught and logged, falling back to running the wrapped workflow untraced instead of crashing it — a tracing failure must never take down the actual application
+- ✅ Verified by simulating a client missing `start_as_current_span` (confirmed graceful fallback) and re-confirming the real SDK still traces correctly (no regression)
+
+**🐛 Follow-up Production Fix: HuggingFace Spaces Returning Zero Papers**
+
+A second, unrelated dependency-drift bug surfaced on the same deploy: `'Search' object has no attribute 'results'`, causing every query to return zero papers. Same root-cause pattern as the LangFuse issue — `arxiv>=2.0.0` was unbounded, and the version resolved on HF Spaces had fully removed the deprecated `Search.results()` shorthand that `utils/arxiv_client.py` and `utils/fastmcp_arxiv_server.py` called directly, while local dev's older `arxiv` install still carried it (with just a `DeprecationWarning`).
+
+- ✅ **Migrated to `arxiv.Client().results(search)`** — the recommended, non-deprecated API, present across both old and new `arxiv` releases — in `utils/arxiv_client.py`, `utils/fastmcp_arxiv_server.py`, and `tests/test_arxiv_v2_fix.py`
+- ✅ Both `ArxivClient` and `ArxivFastMCPServer` now hold one shared `arxiv.Client()` instance instead of relying on the `Search` object's own convenience method
+- ✅ Verified locally: paper search returns correct results with zero deprecation warnings
+
 **Files Modified:**
-- `utils/langfuse_client.py`: v3 API migration (`observe()`, `workflow_trace()`, `check_langfuse_auth()`)
+- `utils/langfuse_client.py`: v3 API migration (`observe()`, `workflow_trace()`, `check_langfuse_auth()`), hardened against missing SDK methods
 - `orchestration/workflow_graph.py`: wraps `app.invoke()` in `workflow_trace(...)`
 - `agents/analyzer.py`: propagates `contextvars` into `ThreadPoolExecutor` workers
 - `app.py`: startup log now reflects actual LangFuse init success/failure instead of always claiming success
 - `.env.example`: documented the key validation script
 - `scripts/validate_langfuse_keys.py`: new diagnostic script
+- `requirements.txt`: pinned `langfuse>=3.10.0,<4.0.0`
+- `utils/arxiv_client.py`, `utils/fastmcp_arxiv_server.py`, `tests/test_arxiv_v2_fix.py`: migrated off deprecated `arxiv.Search.results()`
 
 ---
 
