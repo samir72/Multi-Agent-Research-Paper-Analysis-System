@@ -30,11 +30,14 @@ from dotenv import load_dotenv
 import gradio as gr
 import pandas as pd
 
+from utils.trace_context import TraceIdLogFilter
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - [trace_id=%(trace_id)s] - %(message)s'
 )
+logging.getLogger().handlers[0].addFilter(TraceIdLogFilter())
 logger = logging.getLogger(__name__)
 
 # Load environment variables
@@ -379,7 +382,8 @@ class ResearchPaperAnalyzer:
         query: str,
         category: str,
         num_papers: int,
-        progress=gr.Progress()
+        progress=gr.Progress(),
+        request: gr.Request = None
     ):
         """
         Execute the complete research paper analysis workflow using LangGraph.
@@ -391,6 +395,7 @@ class ResearchPaperAnalyzer:
             category: arXiv category
             num_papers: Number of papers to analyze
             progress: Gradio progress tracker
+            request: Gradio request (used to derive a per-session user_id for tracing)
 
         Yields:
             Tuple of (papers_df, analysis_html, synthesis_html, citations_html, stats)
@@ -423,6 +428,7 @@ class ResearchPaperAnalyzer:
             # Create initial state using LangGraph state schema
             import uuid
             session_id = f"session-{uuid.uuid4().hex[:8]}"
+            user_id = request.session_hash if request else None
 
             initial_state = create_initial_state(
                 query=query,
@@ -434,6 +440,7 @@ class ResearchPaperAnalyzer:
                 },
                 start_time=start_time,
                 session_id=session_id,
+                user_id=user_id,
             )
             # Note: Progress object is NOT added to state to avoid msgpack serialization issues
 
@@ -706,11 +713,11 @@ ARXIV_CATEGORIES = [
 ]
 
 
-def analyze_research(query, category, num_papers, progress=gr.Progress()):
+def analyze_research(query, category, num_papers, progress=gr.Progress(), request: gr.Request = None):
     """Gradio interface function."""
     # Extract category code
     cat_code = category.split(" - ")[0] if category != "All" else "All"
-    yield from analyzer.run_workflow(query, cat_code, num_papers, progress)
+    yield from analyzer.run_workflow(query, cat_code, num_papers, progress, request)
 
 
 # Create Gradio interface

@@ -18,7 +18,8 @@ class LangFuseConfig:
         self.enabled = os.getenv("LANGFUSE_ENABLED", "true").lower() == "true"
         self.public_key = os.getenv("LANGFUSE_PUBLIC_KEY", "")
         self.secret_key = os.getenv("LANGFUSE_SECRET_KEY", "")
-        self.host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+        # self.host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+        self.host = os.getenv("LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com")  # For forward compatibility
 
         # Optional: custom settings
         self.trace_all_llm_calls = os.getenv("LANGFUSE_TRACE_ALL_LLM", "true").lower() == "true"

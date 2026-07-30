@@ -11,6 +11,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from utils.langgraph_state import AgentState
 from utils.langfuse_client import workflow_trace
+from utils.trace_context import set_current_trace_id, reset_current_trace_id
 from orchestration.nodes import (
     retriever_node,
     analyzer_node,
@@ -235,9 +236,15 @@ def run_workflow(
                     "category": initial_state.get("category"),
                     "num_papers": initial_state.get("num_papers"),
                 },
-            ):
-                final_state = app.invoke(initial_state, config=config)
-            logger.info("Workflow execution completed")
+            ) as trace_id:
+                if trace_id:
+                    initial_state["trace_id"] = trace_id
+                token = set_current_trace_id(trace_id)
+                try:
+                    final_state = app.invoke(initial_state, config=config)
+                finally:
+                    reset_current_trace_id(token)
+            logger.info(f"Workflow execution completed (trace_id: {trace_id})")
             return final_state
 
     except Exception as e:

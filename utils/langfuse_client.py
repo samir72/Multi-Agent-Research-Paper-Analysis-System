@@ -248,8 +248,20 @@ def workflow_trace(
     a real error from app.invoke()) are NOT swallowed and propagate
     normally so existing caller-side error handling is unaffected.
 
+    The trace ID is pre-generated (deterministically seeded from session_id
+    via `create_trace_id()`) and forced onto the span via `trace_context`
+    *before* the span opens, rather than read back afterward. This means it's
+    available to the caller at `with ... as trace_id:` time, before the
+    wrapped workflow body runs — so it can be stamped onto AgentState prior
+    to `app.invoke(...)` and flow through every node during the run, not just
+    attached to the final state after the fact.
+
+    Yields the resulting LangFuse trace ID (str), or None if tracing is
+    disabled/unavailable so the id can be stamped onto the workflow's
+    final state for downstream consumers (cache entries, UI, trace lookups).
+
     Usage:
-        with workflow_trace("research_workflow_run", session_id=thread_id):
+        with workflow_trace("research_workflow_run", session_id=thread_id) as trace_id:
             final_state = app.invoke(initial_state, config=config)
     """
     if not is_langfuse_enabled():
@@ -261,16 +273,27 @@ def workflow_trace(
         yield None
         return
 
+    trace_id = None
     try:
-        span_cm = client.start_as_current_span(name=name, metadata=metadata)
+        trace_id = client.create_trace_id(seed=session_id)
+    except Exception as e:
+        logger.error(f"Failed to pre-generate LangFuse trace id for '{name}': {e}")
+
+    try:
+        span_cm = client.start_as_current_span(
+            name=name,
+            trace_context={"trace_id": trace_id} if trace_id else None,
+            metadata=metadata,
+        )
     except Exception as e:
         logger.error(f"Failed to start LangFuse root span '{name}' (tracing disabled for this run): {e}")
         yield None
         return
 
-    with span_cm as span:
+    with span_cm:
         try:
             client.update_current_trace(session_id=session_id, user_id=user_id, metadata=metadata)
         except Exception as e:
             logger.error(f"Failed to tag LangFuse trace '{name}': {e}")
-        yield span
+
+        yield trace_id

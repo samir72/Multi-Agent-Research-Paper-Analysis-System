@@ -185,7 +185,7 @@ Optional:
 - `LANGFUSE_ENABLED`: Enable LangFuse tracing (default: `true`; set to `false` to disable)
 - `LANGFUSE_PUBLIC_KEY`: Your LangFuse public key (get from https://cloud.langfuse.com)
 - `LANGFUSE_SECRET_KEY`: Your LangFuse secret key
-- `LANGFUSE_HOST`: LangFuse host URL (default: `https://cloud.langfuse.com`)
+- `LANGFUSE_BASE_URL`: LangFuse host URL (default: `https://us.cloud.langfuse.com`; renamed from `LANGFUSE_HOST` in v2.10)
 - `LANGFUSE_TRACE_ALL_LLM`: Auto-trace all Azure OpenAI calls (default: `true`)
 - `LANGFUSE_TRACE_RAG`: Trace RAG operations (default: `true`)
 - `LANGFUSE_FLUSH_AT`: Batch size for flushing traces (default: `15`)
@@ -338,7 +338,8 @@ Multi-Agent-Research-Paper-Analysis-System/
 │   ├── config.py                  # Configuration management (Azure, LangFuse, MCP, Pricing)
 │   ├── schemas.py                 # Pydantic data models (with validators)
 │   ├── langgraph_state.py         # LangGraph state TypedDict (NEW v2.6)
-│   └── langfuse_client.py         # LangFuse client and helpers (NEW v2.6)
+│   ├── langfuse_client.py         # LangFuse client and helpers (NEW v2.6)
+│   └── trace_context.py           # trace_id log correlation via contextvars (NEW v2.10)
 ├── config/
 │   └── pricing.json               # Model pricing configuration
 ├── scripts/
@@ -792,7 +793,31 @@ For issues, questions, or feature requests, please:
 
 ## Changelog
 
-### Version 2.9 - July 2026 (Latest)
+### Version 2.10 - July 2026 (Latest)
+
+**🐛 Fix: `trace_id` and `user_id` Showing as `null` in LangFuse**
+
+The prior release (v2.9) got LangFuse tracing working, but two identifying fields on every trace stayed `null`: `user_id` was never actually passed into the workflow state, and `trace_id` was only ever stamped onto the *final* state after `app.invoke()` returned — so no node during the run, including `finalize_node`'s own captured input/output, ever saw a real value.
+
+- ✅ **`user_id` now populated** — `app.py`'s Gradio handler (`analyze_research()` and `ResearchPaperAnalyzer.run_workflow()`) now accepts a `gr.Request` parameter (Gradio auto-injects it) and derives `user_id = request.session_hash`, an anonymous-but-stable per-browser-tab id. There's no auth in this app today, so this is the closest available proxy for "user" without adding a login system.
+- ✅ **`trace_id` now flows through the entire run, not just the final result** — `workflow_trace()` (`utils/langfuse_client.py`) now **pre-generates** the trace ID via `Langfuse.create_trace_id(seed=session_id)` and forces the root span onto it via `start_as_current_span(trace_context={"trace_id": ...})`, instead of reading the ID back with `get_current_trace_id()` after the span had already opened. This makes the real trace ID available *before* `app.invoke()` is called, so `run_workflow()` (`orchestration/workflow_graph.py`) stamps it onto `initial_state["trace_id"]` up front. Since no node ever overwrites that key, every node from `retriever` through `finalize` now sees the same real trace ID in `state`.
+- ✅ **Application logs are now filterable by trace_id, independent of the LangFuse UI** — new `utils/trace_context.py` binds the active trace ID to a `contextvars.ContextVar` around `app.invoke()`, and a `logging.Filter` injects it into every log record as `record.trace_id`. Wired into `app.py`'s existing `logging.basicConfig()` call (added `[trace_id=%(trace_id)s]` to the format string) — since that's the first `basicConfig()` call to execute in the process, this single change makes **every existing `logger.info/warning/error(...)` call across every agent and node** include the trace ID, with no per-file changes needed. The contextvar is also automatically inherited by `AnalyzerAgent`'s `ThreadPoolExecutor` workers via the `contextvars.copy_context()` propagation already used there for LangFuse's own tracing context, so per-paper analyzer logs are tagged too.
+- ✅ Verified end-to-end: submitted a real query and confirmed the same `trace_id` value appears in both the terminal logs (`[trace_id=<32-hex-chars>]` on every line) and the LangFuse trace UI for that run.
+
+**Changed:**
+- `utils/config.py`: `LangFuseConfig.host` now reads `LANGFUSE_BASE_URL` (default `https://us.cloud.langfuse.com`) instead of `LANGFUSE_HOST` (default `https://cloud.langfuse.com`) — update your `.env` if you had `LANGFUSE_HOST` set.
+
+**Files Modified:**
+- `utils/langfuse_client.py`: `workflow_trace()` pre-generates and forces the trace ID via `create_trace_id()`/`trace_context` instead of reading it back afterward
+- `orchestration/workflow_graph.py`: stamps `trace_id` onto `initial_state` and binds the logging contextvar before `app.invoke()`
+- `app.py`: threads `gr.Request` through to derive `user_id`; wires `TraceIdLogFilter` into the root logging handler
+- `utils/config.py`: `LANGFUSE_HOST` → `LANGFUSE_BASE_URL`
+- `utils/trace_context.py`: new module (contextvar + logging filter for trace_id log correlation)
+- `.env.example`, `scripts/validate_langfuse_keys.py`: updated to match the `LANGFUSE_BASE_URL` rename (the validator script read `LANGFUSE_HOST` independently of `utils/config.py` and would have silently displayed a stale host value)
+
+---
+
+### Version 2.9 - July 2026
 
 **🐛 Critical Fix: LangFuse Traces Not Appearing in Dashboard**
 

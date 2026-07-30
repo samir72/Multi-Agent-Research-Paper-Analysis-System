@@ -31,9 +31,9 @@ User Query → Retriever → Analyzer → Filter → Synthesis → Citation → 
 - `validated_output`: ValidatedOutput object (populated by Citation)
 - `errors`: List of error messages accumulated across agents
 - `token_usage`: Dict tracking input/output/embedding tokens
-- `trace_id`: LangFuse trace identifier (for observability)
-- `session_id`: User session tracking
-- `user_id`: Optional user identifier
+- `trace_id`: LangFuse trace identifier (for observability). Set on `initial_state` *before* `app.invoke()` runs (`orchestration/workflow_graph.py::run_workflow()`), so it is present in `state` for every node from `retriever` through `finalize` — not just stamped on afterward. Pre-generated deterministically via `Langfuse.create_trace_id(seed=session_id)` and forced onto the root span via `trace_context` (see `utils/langfuse_client.py::workflow_trace()`).
+- `session_id`: User session tracking (Gradio per-query id, generated in `app.py`)
+- `user_id`: Optional user identifier — populated from the Gradio request's `session_hash` (`request.session_hash` in `app.py`'s handler), giving an anonymous-but-stable per-browser-tab id since the app has no auth
 
 **IMPORTANT**: Only msgpack-serializable data should be stored in the state. Do NOT add complex objects like Gradio Progress, file handles, or callbacks to the state dictionary (see BUGFIX_MSGPACK_SERIALIZATION.md).
 
@@ -190,7 +190,7 @@ cp .env.example .env
 # LANGFUSE_ENABLED=true            # Enable LangFuse tracing
 # LANGFUSE_PUBLIC_KEY=pk-lf-...    # LangFuse public key
 # LANGFUSE_SECRET_KEY=sk-lf-...    # LangFuse secret key
-# LANGFUSE_HOST=https://cloud.langfuse.com  # LangFuse host (cloud or self-hosted)
+# LANGFUSE_BASE_URL=https://us.cloud.langfuse.com  # LangFuse host (cloud region or self-hosted; renamed from LANGFUSE_HOST in v2.10)
 # LANGFUSE_TRACE_ALL_LLM=true      # Auto-trace all Azure OpenAI calls
 # LANGFUSE_TRACE_RAG=true          # Trace RAG operations
 # LANGFUSE_FLUSH_AT=15             # Batch size for flushing traces
@@ -399,9 +399,16 @@ The system automatically traces all agent executions and LLM calls when LangFuse
 - `initialize_langfuse()`: Initialize global LangFuse client at startup
 - `instrument_openai()`: Auto-trace all Azure OpenAI API calls
 - `@observe` decorator: Trace custom functions/spans, wrapping the real v3 `langfuse.observe`. The enabled/disabled check happens at **call time**, not decoration time — `@observe` is applied to agent methods at module import time, before `initialize_langfuse()` runs at app startup, so gating at decoration time would permanently disable tracing regardless of configuration.
-- `workflow_trace(name, session_id=None, user_id=None, metadata=None)`: Context manager that opens **one root span per workflow run** via `start_as_current_span()` and tags it with session/user via `update_current_trace()`. Wrapped around `app.invoke(...)` in `orchestration/workflow_graph.py::run_workflow()` so every node/agent span and LLM generation nests under a single trace instead of appearing as disconnected top-level traces. Safely no-ops (never raises) if the installed SDK lacks this method or tracing is disabled — a tracing failure must never crash the actual workflow.
+- `workflow_trace(name, session_id=None, user_id=None, metadata=None)`: Context manager that opens **one root span per workflow run** via `start_as_current_span()` and tags it with session/user via `update_current_trace()`. Wrapped around `app.invoke(...)` in `orchestration/workflow_graph.py::run_workflow()` so every node/agent span and LLM generation nests under a single trace instead of appearing as disconnected top-level traces. Safely no-ops (never raises) if the installed SDK lacks this method or tracing is disabled — a tracing failure must never crash the actual workflow. **Pre-generates the trace ID** via `Langfuse.create_trace_id(seed=session_id)` and forces the span onto it via `start_as_current_span(trace_context={"trace_id": ...})`, rather than reading the ID back after the span opens — this makes the real trace ID available to the caller *before* the wrapped workflow body runs, so `run_workflow()` can stamp it onto `initial_state["trace_id"]` prior to `app.invoke()` and have it flow through every node.
 - `check_langfuse_auth()`: Live credential check against the LangFuse API (`client.auth_check()`), independent of the module-level singleton. Used by `scripts/validate_langfuse_keys.py` — run this before deploying to confirm keys actually authenticate, since presence of keys alone doesn't guarantee they're valid.
 - `flush_langfuse()`: Ensure all traces uploaded before shutdown
+
+**Correlating Python logs with LangFuse traces** (`utils/trace_context.py`, added v2.10):
+- A `contextvars.ContextVar` holds the active `trace_id`; `set_current_trace_id()`/`reset_current_trace_id()` bind and unbind it around `app.invoke()` in `run_workflow()`.
+- `TraceIdLogFilter` (a `logging.Filter`) reads that contextvar and injects `record.trace_id` into every `LogRecord`. It's attached to the root logger's **handler** (`logging.getLogger().handlers[0].addFilter(...)`, done once in `app.py`) rather than to a `Logger` object — filters on a `Logger` only apply to records logged directly through that logger instance, not to records from child loggers (e.g. `agents.analyzer`, `orchestration.nodes`) that just propagate up to the root handler.
+- `app.py`'s `logging.basicConfig(...)` format string includes `[trace_id=%(trace_id)s]`. Because `logging.basicConfig()` is a no-op after the first call in a process, and `app.py` imports/configures logging before any `agents`/`rag`/`orchestration` module runs its own (identical, now-redundant) `basicConfig()` call, this one change makes **every existing `logger.info/warning/error(...)` call in every node and agent** include the trace ID — no per-file changes needed.
+- Because `contextvars.copy_context()` snapshots *all* active contextvars (not just LangFuse's own OTEL ones), this trace ID contextvar is automatically inherited by `AnalyzerAgent`'s `ThreadPoolExecutor` workers too, via the same `copy_context().run(...)` submission pattern described below — so per-paper analyzer log lines are also correctly tagged.
+- End result: application logs can be filtered/grepped by trace ID independent of the LangFuse UI, and the same ID correlates a log line to its exact LangFuse trace.
 
 **Automatic Tracing**:
 - All agent `run()` methods decorated with `@observe`
@@ -548,6 +555,7 @@ See `observability/README.md` for comprehensive documentation.
 - `observability/analytics.py`: Performance analytics and trajectory analysis
 - `observability/README.md`: Comprehensive observability documentation
 - `utils/langfuse_client.py`: LangFuse client initialization and helpers
+- `utils/trace_context.py`: Contextvar + `logging.Filter` correlating Python logs with the active LangFuse trace ID (NEW v2.10)
 
 ### Utilities
 - `utils/arxiv_client.py`: Direct arXiv API client with retry logic
@@ -567,6 +575,20 @@ See `observability/README.md` for comprehensive documentation.
 - `.env.example`: Environment variable template with all options
 
 ## Version History and Recent Changes
+
+### Version 2.10: trace_id/user_id Propagation Through State and Logs
+
+**Fixed:**
+- **`user_id` always null in LangFuse** — `app.py`'s Gradio handler never passed a `user_id` into `create_initial_state()`, so it silently defaulted to `None`. There's no auth in this app, so `run_workflow()` (both the module-level `analyze_research()` function and `ResearchPaperAnalyzer.run_workflow()`) now accept a `request: gr.Request` parameter (Gradio auto-injects it) and derive `user_id = request.session_hash` — an anonymous but stable per-browser-tab identifier.
+- **`trace_id` always null in `state`, including in the `finalize_node` span's own captured input/output** — `create_initial_state()` hardcoded `trace_id: None` and nothing ever wrote to it during the run; it was previously only stamped onto `final_state` *after* `app.invoke()` returned, so no node ever actually saw it. Fixed by having `workflow_trace()` (`utils/langfuse_client.py`) **pre-generate** the trace ID via `Langfuse.create_trace_id(seed=session_id)` and force the root span onto it via `start_as_current_span(trace_context={"trace_id": ...})`, instead of reading the ID back after the span opens. This makes the real trace ID available to `run_workflow()` (`orchestration/workflow_graph.py`) *before* `app.invoke()` is called, so it can stamp `initial_state["trace_id"]` up front — since no node in `orchestration/nodes.py` ever overwrites that key, it now flows unchanged through every node (retriever → analyzer → filter → synthesis → citation → finalize).
+
+**Added:**
+- `utils/trace_context.py` — a `contextvars.ContextVar` holding the active trace ID, with `set_current_trace_id()`/`reset_current_trace_id()` bound around `app.invoke()`, plus `TraceIdLogFilter` (a `logging.Filter`) that injects `record.trace_id` into every `LogRecord`. Attached once to the root logger's handler in `app.py` (with `[trace_id=%(trace_id)s]` added to the log format string) — since `logging.basicConfig()` only takes effect on its first call per process and `app.py` configures logging before any `agents`/`rag`/`orchestration` module does, this single change makes **every existing log line in every node and agent** filterable by trace ID, with zero changes to `nodes.py` or any `agents/*.py` file. The contextvar is also automatically inherited by `AnalyzerAgent`'s `ThreadPoolExecutor` workers via the `contextvars.copy_context()` propagation pattern already in place there (see [Adding a new agent](#common-modification-points)), so per-paper analyzer logs are tagged too.
+
+**Changed:**
+- `utils/config.py`: `LangFuseConfig.host` now reads `LANGFUSE_BASE_URL` (default `https://us.cloud.langfuse.com`) instead of `LANGFUSE_HOST` (default `https://cloud.langfuse.com`). `.env.example` and `scripts/validate_langfuse_keys.py` (which read the host var independently of `utils/config.py`) updated to match, so the validator's diagnostic output stays accurate.
+
+**Lesson reinforced**: when a value needs to be visible *during* a run (not just attached to the result afterward), it has to be established before the run starts — `workflow_trace()` had to switch from *reading back* an auto-generated trace ID to *pre-generating* one so it could be seeded into state ahead of `app.invoke()`, the same "compute it early enough for downstream consumers" pattern behind `session_id` and now `trace_id`.
 
 ### Version 2.9: LangFuse v3 SDK Migration + Production Dependency Fixes
 

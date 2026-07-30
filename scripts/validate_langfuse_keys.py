@@ -31,7 +31,7 @@ def validate_langfuse_config() -> bool:
     enabled = os.getenv("LANGFUSE_ENABLED", "true").lower() == "true"
     public_key = os.getenv("LANGFUSE_PUBLIC_KEY", "")
     secret_key = os.getenv("LANGFUSE_SECRET_KEY", "")
-    host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+    host = os.getenv("LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com")
 
     print("1. Checking environment variables...")
     print("-" * 80)
@@ -39,7 +39,7 @@ def validate_langfuse_config() -> bool:
     print(f"{'✅' if public_key else '❌'} LANGFUSE_PUBLIC_KEY: {public_key or 'NOT SET'}")
     secret_display = f"{secret_key[:6]}...{secret_key[-4:]}" if len(secret_key) > 10 else ("***" if secret_key else "NOT SET")
     print(f"{'✅' if secret_key else '❌'} LANGFUSE_SECRET_KEY: {secret_display}")
-    print(f"✅ LANGFUSE_HOST: {host}")
+    print(f"✅ LANGFUSE_BASE_URL: {host}")
     print()
 
     if not enabled:
@@ -77,7 +77,7 @@ def validate_langfuse_config() -> bool:
         print("  Keys parsed but access was refused — check project/org permissions in LangFuse.")
     elif any(s in message for s in ("Connection", "timeout", "resolve", "Timeout", "Name or service")):
         print("DIAGNOSIS: Cannot reach LangFuse host")
-        print(f"  1. Verify LANGFUSE_HOST ({host}) is correct")
+        print(f"  1. Verify LANGFUSE_BASE_URL ({host}) is correct")
         print("  2. If self-hosting, confirm the server is running and reachable")
     else:
         print("DIAGNOSIS: See error message above for details.")
