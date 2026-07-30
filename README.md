@@ -350,7 +350,9 @@ Multi-Agent-Research-Paper-Analysis-System/
 │   ├── test_mcp_arxiv_client.py   # Unit tests for legacy MCP client (21 tests)
 │   ├── test_fastmcp_arxiv.py      # Unit tests for FastMCP (38 tests)
 │   ├── test_schema_validators.py  # Unit tests for Pydantic validators (15 tests)
-│   └── test_data_validation.py    # Data validation test script
+│   ├── test_data_validation.py    # Data validation test script
+│   ├── test_trace_reader.py       # Unit tests for TraceReader v3 query API (NEW v2.11)
+│   └── test_analytics.py          # Unit tests for get_verified_trace_cost (NEW v2.11)
 ├── test_mcp_diagnostic.py         # MCP setup diagnostic script
 ├── REFACTORING_SUMMARY.md         # LangGraph + LangFuse refactoring details (NEW v2.6)
 ├── BUGFIX_MSGPACK_SERIALIZATION.md # msgpack serialization fix documentation (NEW v2.6)
@@ -793,7 +795,35 @@ For issues, questions, or feature requests, please:
 
 ## Changelog
 
-### Version 2.10 - July 2026 (Latest)
+### Version 2.11 - July 2026 (Latest)
+
+**🐛 Fix: Observability Read API Was Completely Broken**
+
+`observability/trace_reader.py` called `client.get_traces()` / `client.get_trace()` / `client.get_observations()` — none of which exist on the installed v3 `Langfuse` SDK class (that's v2-only API). Every method silently returned `[]`/`None` via a broad `except Exception`, so `observability/analytics.py` (built entirely on top of `TraceReader`) was broken transitively too. There was zero test coverage for either module, so this went unnoticed.
+
+- ✅ **Switched to the real v3 query client**: `client.api.trace.get(trace_id)` / `client.api.trace.list(...)` / `client.api.observations.get_many(...)`.
+- ✅ **Fixed a wrong kwarg name** — observation queries need `from_start_time`/`to_start_time`, not `from_timestamp`/`to_timestamp` (that pair is only valid for `trace.list()`).
+- ✅ **Fixed trace duration always being `None`** — `Trace` objects have no `start_time`/`end_time`, only `timestamp` plus a separate pre-computed `latency` (seconds) field; now used uniformly for both traces and observations.
+- ✅ **Fixed a Pydantic validation error** surfaced only once `get_generations()` started returning real data: `GenerationInfo.prompt`/`.completion` were typed `Optional[str]`, but the outer agent-wrapper generation spans (e.g. `"analyzer_agent_run"`) capture a raw state dict, not a string. Widened to `Optional[Any]`.
+- ✅ **Fixed `AgentStats.total_cost`** being hardcoded to `0.0` regardless of data — now sums real cost from an agent's generations.
+- ✅ **Verified live** against a real LangFuse project: confirmed a real past trace with `total_cost: 0.0118901`, broken down into individual `"OpenAI-generation"` observations with real per-call cost (e.g. `model=gpt-4o-mini-2024-07-18, cost=0.0006081`).
+
+**🆕 New: Pull Real, LangFuse-Computed Cost (Not Just the Internal Estimate)**
+
+- ✅ `observability/analytics.py::get_verified_trace_cost(trace_id)` — pulls the real cost LangFuse computed for a run, polling with a short delay since LangFuse computes cost server-side, asynchronously, after ingestion (a freshly-flushed trace can briefly 404 with `LangfuseNotFoundError` before it's queryable). Never raises.
+- ✅ Wired into `app.py`'s Stats tab as **"LangFuse-Verified Cost"**, shown alongside (not replacing) the existing internal **"Estimated Cost"** from `citation.py` — the internal estimate stays the always-available primary number; the verified cost is additive/best-effort.
+- ✅ Retry budget widened from `max_attempts=5, delay_seconds=1.0` (~4s wait) to `max_attempts=10` (~9s wait, +5s) after real runs showed LangFuse ingestion sometimes taking longer than the original window.
+- ✅ New test coverage: `tests/test_trace_reader.py` + `tests/test_analytics.py` (15 tests) — neither module had any tests before this release.
+
+**Files Modified:**
+- `observability/trace_reader.py`: v3 `client.api.*` query calls, kwarg fix, duration fix, `GenerationInfo` typing fix
+- `observability/analytics.py`: `AgentStats.total_cost` fix, new `get_verified_trace_cost()`
+- `app.py`: pulls and displays verified cost in the Stats tab
+- `tests/test_trace_reader.py`, `tests/test_analytics.py`: new test files
+
+---
+
+### Version 2.10 - July 2026
 
 **🐛 Fix: `trace_id` and `user_id` Showing as `null` in LangFuse**
 

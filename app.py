@@ -115,6 +115,7 @@ from utils.langgraph_state import create_initial_state
 
 # Import LangFuse observability
 from utils.langfuse_client import initialize_langfuse, instrument_openai, flush_langfuse, shutdown_langfuse
+from observability.analytics import get_verified_trace_cost
 
 
 
@@ -476,6 +477,13 @@ class ResearchPaperAnalyzer:
                 yield self._format_error(final_state.get("errors", ["Unknown error occurred"]))
                 return
 
+            # Pull the real, LangFuse-computed cost for this run (best-effort;
+            # never blocks/fails the response if LangFuse is disabled or the
+            # trace isn't queryable yet -- falls back to the internal estimate)
+            progress(0.95, desc="Verifying cost...")
+            trace_id = final_state.get("trace_id")
+            final_state["verified_cost"] = get_verified_trace_cost(trace_id) if trace_id else None
+
             # Processing time is now calculated in finalize_node
             progress(1.0, desc="Complete!")
 
@@ -653,12 +661,15 @@ class ResearchPaperAnalyzer:
         citations_html += "</ol>"
 
         # Format stats
+        verified_cost = result.get("verified_cost")
+        verified_cost_display = f"${verified_cost:.4f}" if verified_cost is not None else "unavailable (check LangFuse config)"
         stats = f"""
         <h3>Processing Statistics</h3>
         <ul>
             <li>Papers Analyzed: {len(validated_output.synthesis.papers_analyzed)}</li>
             <li>Processing Time: {validated_output.processing_time:.1f} seconds</li>
-            <li>Estimated Cost: ${validated_output.cost_estimate:.4f}</li>
+            <li>Estimated Cost (internal): ${validated_output.cost_estimate:.4f}</li>
+            <li>LangFuse-Verified Cost: {verified_cost_display}</li>
             <li>Chunks Used: {len(validated_output.retrieved_chunks)}</li>
             <li>Token Usage:</li>
             <ul>

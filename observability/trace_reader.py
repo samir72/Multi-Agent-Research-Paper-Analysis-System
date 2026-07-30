@@ -5,7 +5,7 @@ Provides Python API for programmatic access to traces, spans, and generations.
 """
 import logging
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime
 from pydantic import BaseModel, Field
 
 from utils.langfuse_client import get_langfuse_client, is_langfuse_enabled
@@ -48,8 +48,12 @@ class GenerationInfo(BaseModel):
     trace_id: str
     name: str
     model: Optional[str] = None
-    prompt: Optional[str] = None
-    completion: Optional[str] = None
+    # Optional[Any], not Optional[str]: this covers every GENERATION-type
+    # observation, including the outer @observe(as_type="generation")-decorated
+    # agent run() methods (e.g. "analyzer_agent_run"), whose captured
+    # input/output is the raw state dict, not a plain text prompt/completion.
+    prompt: Optional[Any] = None
+    completion: Optional[Any] = None
     usage: Dict[str, int] = Field(default_factory=dict)
     cost: Optional[float] = None
     start_time: datetime
@@ -115,8 +119,9 @@ class TraceReader:
             if to_timestamp:
                 params["to_timestamp"] = to_timestamp
 
-            # Fetch traces from LangFuse
-            traces_data = self.client.get_traces(**params)
+            # Fetch traces from LangFuse (v3 SDK: query API lives under client.api.*,
+            # not directly on the Langfuse client -- there is no client.get_traces())
+            traces_data = self.client.api.trace.list(**params)
 
             # Convert to TraceInfo objects
             traces = []
@@ -158,7 +163,7 @@ class TraceReader:
             return None
 
         try:
-            trace = self.client.get_trace(trace_id)
+            trace = self.client.api.trace.get(trace_id)
 
             if not trace:
                 logger.warning(f"Trace {trace_id} not found")
@@ -207,12 +212,15 @@ class TraceReader:
             return []
 
         try:
-            # Get observations filtered by name
+            # Get observations filtered by name. Note: observations.get_many()'s
+            # real kwarg is from_start_time, not from_timestamp (that's only
+            # valid on trace.list()) -- the public param name here stays
+            # from_timestamp for backward compatibility with existing callers.
             params = {"limit": limit, "name": agent_name, "type": "SPAN"}
             if from_timestamp:
-                params["from_timestamp"] = from_timestamp
+                params["from_start_time"] = from_timestamp
 
-            observations = self.client.get_observations(**params)
+            observations = self.client.api.observations.get_many(**params)
 
             spans = []
             for obs in observations.data:
@@ -263,13 +271,17 @@ class TraceReader:
     def get_generations(
         self,
         trace_id: Optional[str] = None,
+        name: Optional[str] = None,
+        from_timestamp: Optional[datetime] = None,
         limit: int = 50,
     ) -> List[GenerationInfo]:
         """
-        Get LLM generations (optionally filtered by trace).
+        Get LLM generations (optionally filtered by trace, name, and/or date).
 
         Args:
             trace_id: Optional trace ID to filter generations
+            name: Optional generation name filter (e.g. "analyzer_agent_run")
+            from_timestamp: Optional lower bound on generation start time
             limit: Maximum number of generations
 
         Returns:
@@ -283,8 +295,12 @@ class TraceReader:
             params = {"limit": limit, "type": "GENERATION"}
             if trace_id:
                 params["trace_id"] = trace_id
+            if name:
+                params["name"] = name
+            if from_timestamp:
+                params["from_start_time"] = from_timestamp
 
-            observations = self.client.get_observations(**params)
+            observations = self.client.api.observations.get_many(**params)
 
             generations = []
             for obs in observations.data:
@@ -296,7 +312,7 @@ class TraceReader:
                     prompt=getattr(obs, "input", None),
                     completion=getattr(obs, "output", None),
                     usage=self._extract_token_usage(obs),
-                    cost=getattr(obs, "calculated_total_cost", None),
+                    cost=self._extract_cost(obs),
                     start_time=obs.start_time,
                     end_time=obs.end_time,
                     duration_ms=self._calculate_duration(obs),
@@ -329,7 +345,7 @@ class TraceReader:
         try:
             import json
 
-            data = [trace.dict() for trace in traces]
+            data = [trace.model_dump() for trace in traces]
 
             with open(output_file, 'w') as f:
                 json.dump(data, f, indent=2, default=str)
@@ -397,17 +413,46 @@ class TraceReader:
     # Helper methods
 
     def _calculate_duration(self, obj: Any) -> Optional[float]:
-        """Calculate duration in milliseconds from start and end times."""
+        """
+        Calculate duration in milliseconds.
+
+        Traces (Trace/TraceWithDetails/TraceWithFullDetails) have no
+        start_time/end_time -- only a pre-computed `latency` field (seconds).
+        Observations (spans/generations) have both `latency` and real
+        start_time/end_time; `latency` is preferred uniformly when present,
+        falling back to a start/end diff for older data that lacks it.
+        """
         try:
+            latency = getattr(obj, "latency", None)
+            if latency is not None:
+                return latency * 1000
             if hasattr(obj, 'start_time') and hasattr(obj, 'end_time') and obj.end_time:
-                duration = (obj.end_time - obj.start_time).total_seconds() * 1000
-                return duration
+                return (obj.end_time - obj.start_time).total_seconds() * 1000
             return None
         except Exception:
             return None
 
     def _extract_token_usage(self, obj: Any) -> Dict[str, int]:
-        """Extract token usage from observation."""
+        """
+        Extract token usage from an observation.
+
+        Prefers the non-deprecated `usage_details` dict (key names vary by
+        provider -- langfuse.openai's wrapper stores raw OpenAI usage keys
+        like prompt_tokens/completion_tokens/total_tokens for chat calls, or
+        just {"input": N} for embeddings), falling back to the deprecated
+        `usage` object for older data that predates usage_details.
+        """
+        try:
+            usage_details = getattr(obj, "usage_details", None)
+            if usage_details:
+                return {
+                    "input": usage_details.get("input", usage_details.get("prompt_tokens", 0)) or 0,
+                    "output": usage_details.get("output", usage_details.get("completion_tokens", 0)) or 0,
+                    "total": usage_details.get("total", usage_details.get("total_tokens", 0)) or 0,
+                }
+        except Exception:
+            pass
+
         usage = {}
         try:
             if hasattr(obj, 'usage') and obj.usage:
@@ -417,3 +462,18 @@ class TraceReader:
         except Exception:
             pass
         return usage
+
+    def _extract_cost(self, obj: Any) -> Optional[float]:
+        """
+        Extract total cost from an observation.
+
+        Prefers the non-deprecated `cost_details` dict's "total" key, falling
+        back to the deprecated `calculated_total_cost` field for older data.
+        """
+        try:
+            cost_details = getattr(obj, "cost_details", None)
+            if cost_details and "total" in cost_details:
+                return cost_details["total"]
+        except Exception:
+            pass
+        return getattr(obj, "calculated_total_cost", None)

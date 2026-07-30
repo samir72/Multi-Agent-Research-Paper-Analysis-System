@@ -381,6 +381,8 @@ Current test coverage:
 - **AnalyzerAgent** (18 tests): Core analysis workflow and error handling
 - **MCPArxivClient** (21 tests): Legacy MCP tool integration, async/sync wrappers, response parsing
 - **FastMCPArxiv** (38 tests): FastMCP server, client, integration, error handling, fallback logic
+- **TraceReader** (`tests/test_trace_reader.py`, NEW v2.11): Correct v3 `client.api.*` call shapes/kwargs, `usage_details`/`cost_details` extraction preferring non-deprecated fields, graceful disabled-LangFuse behavior — this module had zero test coverage before v2.11, which is exactly how its v2-API breakage went unnoticed
+- **`get_verified_trace_cost`** (`tests/test_analytics.py`, NEW v2.11): Retry/poll semantics (treats a `0.0` cost as "not computed yet" and keeps polling, returns `None` only when the trace itself can't be found, never raises)
 
 When adding tests for other agents, follow the same pattern:
 - Fixtures for mock dependencies
@@ -418,6 +420,8 @@ The system automatically traces all agent executions and LLM calls when LangFuse
 - **Thread-pool gotcha**: `contextvars` (which OTEL/LangFuse tracing relies on) are not propagated into new threads automatically. `AnalyzerAgent`'s `ThreadPoolExecutor` explicitly runs each submitted task inside `contextvars.copy_context()` for this reason — any new parallelized code path must do the same or its spans will be orphaned (see "Adding a new agent" below).
 
 ### Trace Querying (`observability/trace_reader.py`)
+
+**IMPORTANT (fixed in v2.11)**: `TraceReader`'s query methods call the LangFuse v3 SDK's REST query client at `client.api.*` (`client.api.trace.get/list`, `client.api.observations.get_many`). Earlier versions of this file called `client.get_traces()`/`client.get_trace()`/`client.get_observations()` — none of which exist on the v3 `Langfuse` class (that's v2-only API) — so every method silently returned `[]`/`None` via a broad `except Exception`, with no test coverage to catch it. If you see `AttributeError` or 404s (`LangfuseNotFoundError`) coming from this module, the first thing to check is whether the SDK's query surface changed again, not whether the trace itself is missing — cross-check against `dir(Langfuse().api.trace)` / `dir(Langfuse().api.observations)` in the installed SDK version. Cost/usage extraction prefers the non-deprecated `usage_details`/`cost_details` fields on observations over the deprecated `calculated_total_cost`/`usage` fields (both are read, newer preferred, for compatibility with older data).
 
 ```python
 from observability import TraceReader
@@ -476,6 +480,21 @@ traj_analyzer = AgentTrajectoryAnalyzer()
 analysis = traj_analyzer.analyze_execution_paths(days=7)
 print(f"Most common path: {analysis['most_common_path']}")
 ```
+
+**Pulling a single run's real, LangFuse-computed cost** (added v2.11, `observability/analytics.py`):
+```python
+from observability.analytics import get_verified_trace_cost
+
+cost = get_verified_trace_cost(trace_id, max_attempts=10, delay_seconds=1.0)
+# None if LangFuse is disabled or the trace isn't queryable within the retry
+# window -- never raises. Polls because LangFuse computes cost server-side,
+# asynchronously, after ingestion; it is not always queryable immediately
+# after flush_langfuse() returns (an already-flushed trace can 404 with
+# LangfuseNotFoundError for a few seconds before it's indexed).
+```
+This is wired into `app.py`'s Stats tab, shown alongside (not replacing) `citation.py`'s own internal `cost_estimate` — the internal estimate is always available and stays primary; the verified cost is best-effort and may still show "unavailable" on unusually slow LangFuse ingestion even with the widened budget.
+
+Also fixed in v2.11: `AgentStats.total_cost` in `agent_latency_stats()` was previously hardcoded to `0.0` regardless of data — it now sums real cost from that agent's `"<agent_name>_run"` generations (e.g. `"analyzer_agent_run"`), so `cost_per_agent()`/`agent_latency_stats()` return real numbers now that the underlying query methods work.
 
 See `observability/README.md` for comprehensive documentation.
 
@@ -551,8 +570,8 @@ See `observability/README.md` for comprehensive documentation.
 
 ### Observability (LangFuse)
 - `observability/__init__.py`: Module exports
-- `observability/trace_reader.py`: Trace querying and export API
-- `observability/analytics.py`: Performance analytics and trajectory analysis
+- `observability/trace_reader.py`: Trace querying and export API (v3 `client.api.*` query calls fixed in v2.11 — see "Trace Querying" above)
+- `observability/analytics.py`: Performance analytics and trajectory analysis; `get_verified_trace_cost()` (NEW v2.11) pulls real per-run cost
 - `observability/README.md`: Comprehensive observability documentation
 - `utils/langfuse_client.py`: LangFuse client initialization and helpers
 - `utils/trace_context.py`: Contextvar + `logging.Filter` correlating Python logs with the active LangFuse trace ID (NEW v2.10)
@@ -575,6 +594,24 @@ See `observability/README.md` for comprehensive documentation.
 - `.env.example`: Environment variable template with all options
 
 ## Version History and Recent Changes
+
+### Version 2.11: Fix Broken Observability Read API + Real LangFuse Cost Pull
+
+**Fixed:**
+- **`observability/trace_reader.py`'s entire query surface was broken** — `get_traces()`, `get_trace_by_id()`, and `filter_by_agent()`/`get_generations()` called `client.get_traces()`/`client.get_trace()`/`client.get_observations()`, none of which exist on the installed v3 `Langfuse` SDK class (v2-only API, same root-cause pattern as the v2.9 write-side migration, just never applied to the read side). Every method silently returned `[]`/`None` via a broad `except Exception`, and `observability/analytics.py` — built entirely on top of `TraceReader` — was broken transitively. Zero test coverage existed for either module, so this was never caught. Fixed by switching to the real v3 query client: `client.api.trace.get(trace_id)` / `client.api.trace.list(...)` / `client.api.observations.get_many(...)`.
+- **Wrong kwarg name for observation queries** — the (already-broken) code passed `from_timestamp=`/`to_timestamp=` to what should be `observations.get_many()`; that call's real parameter names are `from_start_time`/`to_start_time` (`trace.list()` does correctly use `from_timestamp`/`to_timestamp`).
+- **`_calculate_duration()` always returned `None` for traces** — it assumed `start_time`/`end_time` exist on every object, but `Trace`/`TraceWithDetails`/`TraceWithFullDetails` only have `timestamp`, plus a separate pre-computed `latency` (seconds) field. Now prefers `.latency` uniformly (present on both traces and observations), falling back to a start/end diff only when `latency` is absent.
+- **`GenerationInfo.prompt`/`.completion` typed too narrowly as `Optional[str]`** — surfaced only once `get_generations()` started returning real data: the outer `@observe(as_type="generation")`-decorated agent `run()` spans (e.g. `"analyzer_agent_run"`) capture the raw state dict as input/output, not a plain string, causing a Pydantic validation error. Widened to `Optional[Any]`, matching `TraceInfo`/`SpanInfo`'s existing input/output typing.
+- **`AgentStats.total_cost` hardcoded to `0.0`** in `agent_latency_stats()` regardless of data — now sums real cost from that agent's `"<agent_name>_run"` generations.
+
+**Added:**
+- `observability/analytics.py::get_verified_trace_cost(trace_id, max_attempts=10, delay_seconds=1.0)` — pulls the real, LangFuse-computed `total_cost` for a single trace (via the now-fixed `TraceReader.get_trace_by_id()`), polling with a short delay since LangFuse computes cost server-side, asynchronously, after ingestion — a freshly-flushed trace can 404 (`LangfuseNotFoundError`, "not found within authorized project") for several seconds before it's queryable, independent of when `flush_langfuse()` returns. Never raises; returns `None` if the trace can't be found within the retry budget, or the last-seen cost (even `0.0`) if the trace was found but genuinely still cost-less.
+- Wired into `app.py`'s Stats tab: `final_state["verified_cost"]` is pulled after `flush_langfuse()` and shown as **"LangFuse-Verified Cost"** alongside (not replacing) `citation.py`'s internal **"Estimated Cost (internal)"** — kept side-by-side deliberately, since this is a newly-fixed, previously-never-exercised data path and the internal estimate remains the always-available primary number.
+- `tests/test_trace_reader.py` + `tests/test_analytics.py` (15 tests) — neither module had any test coverage before this.
+
+**Verified live** against a real configured LangFuse project (not just unit tests): confirmed `client.api.trace.get()`/`.list()`/`observations.get_many()` return real data, including a real past trace with `total_cost: 0.0118901` broken down into individual `"OpenAI-generation"` observations (e.g. `model=gpt-4o-mini-2024-07-18, cost=0.0006081`) plus zero-cost outer agent-wrapper spans, exactly as expected.
+
+**Retry budget note**: initial testing showed the original `max_attempts=5, delay_seconds=1.0` budget (~4s of sleep between attempts) was sometimes shorter than real-world LangFuse ingestion lag — a freshly-flushed trace occasionally 404'd past that window before becoming queryable moments later. The budget was widened to `max_attempts=10` (~9s of sleep, +5s) to close that gap; it remains a best-effort, bounded wait, not a guarantee, and the Stats tab can still show "unavailable" on unusually slow ingestion.
 
 ### Version 2.10: trace_id/user_id Propagation Through State and Logs
 

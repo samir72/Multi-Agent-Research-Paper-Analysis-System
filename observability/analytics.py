@@ -4,6 +4,7 @@ Performance analytics for agent execution and trajectory analysis.
 Provides comprehensive metrics, statistics, and visualizations for observability data.
 """
 import logging
+import time
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -119,6 +120,19 @@ class AgentPerformanceAnalyzer:
         latencies_sorted = sorted(latencies)
         n = len(latencies_sorted)
 
+        # Cost/token data lives on the agent's inner "<agent_name>_run" GENERATION
+        # observation (e.g. "analyzer_agent_run"), not on the outer SPAN filtered
+        # above -- agents with no LLM calls (e.g. citation_agent) simply have no
+        # matching generations, correctly yielding zero cost/tokens.
+        generations = self.trace_reader.get_generations(
+            name=f"{agent_name}_run",
+            from_timestamp=from_date,
+            limit=limit,
+        )
+        total_cost = sum(g.cost for g in generations if g.cost is not None)
+        avg_input_tokens = statistics.mean([g.usage.get("input", 0) for g in generations]) if generations else 0.0
+        avg_output_tokens = statistics.mean([g.usage.get("output", 0) for g in generations]) if generations else 0.0
+
         stats = AgentStats(
             agent_name=agent_name,
             execution_count=len(spans),
@@ -129,9 +143,9 @@ class AgentPerformanceAnalyzer:
             min_latency_ms=min(latencies),
             max_latency_ms=max(latencies),
             success_rate=self._calculate_success_rate(spans),
-            total_cost=0.0,  # Cost tracking requires generation data
-            avg_input_tokens=0.0,
-            avg_output_tokens=0.0,
+            total_cost=total_cost,
+            avg_input_tokens=avg_input_tokens,
+            avg_output_tokens=avg_output_tokens,
         )
 
         logger.info(f"Calculated stats for '{agent_name}': avg={stats.avg_latency_ms:.2f}ms, "
@@ -511,3 +525,58 @@ class AgentTrajectoryAnalyzer:
             trajectory.success = True
 
         return trajectory
+
+
+def get_verified_trace_cost(
+    trace_id: str,
+    max_attempts: int = 10,
+    delay_seconds: float = 1.0,
+    trace_reader: Optional[TraceReader] = None,
+) -> Optional[float]:
+    """
+    Pull the real, LangFuse-computed total cost for a single trace.
+
+    LangFuse computes cost server-side, asynchronously, after a trace's
+    spans/generations are ingested -- so it isn't always queryable
+    immediately after flush_langfuse() returns. This polls a few times with
+    a short delay before giving up, and never raises: an observability
+    lookup failing must never break the caller's request, consistent with
+    how workflow_trace() itself degrades gracefully on tracing failures.
+
+    Args:
+        trace_id: The trace to look up (e.g. final_state["trace_id"])
+        max_attempts: How many times to poll before giving up
+        delay_seconds: Delay between polling attempts
+        trace_reader: Optional TraceReader instance (creates new if None)
+
+    Returns:
+        The trace's total_cost in USD, or None if unavailable/LangFuse disabled
+    """
+    reader = trace_reader or TraceReader()
+
+    last_cost: Optional[float] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            trace = reader.get_trace_by_id(trace_id)
+            if trace is not None:
+                last_cost = trace.total_cost
+                # A cost of exactly 0.0 usually means LangFuse hasn't finished
+                # computing it yet (server-side, async, after ingestion) --
+                # any non-zero value is a real, confirmed answer worth
+                # returning immediately instead of waiting out the full budget.
+                if last_cost:
+                    return last_cost
+        except Exception as e:
+            logger.error(f"Error polling verified cost for trace '{trace_id}' (attempt {attempt}): {e}")
+
+        if attempt < max_attempts:
+            time.sleep(delay_seconds)
+
+    if last_cost is not None:
+        logger.warning(
+            f"Verified cost for trace '{trace_id}' still $0.00 after {max_attempts} attempts "
+            "(may genuinely be zero, or LangFuse may not have finished computing it yet)"
+        )
+    else:
+        logger.warning(f"Verified cost for trace '{trace_id}' unavailable after {max_attempts} attempts")
+    return last_cost
