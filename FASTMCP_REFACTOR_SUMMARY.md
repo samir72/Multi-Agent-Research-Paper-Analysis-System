@@ -25,7 +25,7 @@ Successfully refactored the retriever agent to use FastMCP for arXiv integration
 - **Drop-in compatible**: Implements same interface as `ArxivClient`
 - **Async-first design**: Core methods are async with sync wrappers
 - **Lazy initialization**: Client connects to server on first use
-- **Robust parsing**: Reuses legacy MCP's `_parse_mcp_paper()` logic
+- **Robust parsing**: Defensive `_parse_mcp_paper()` normalization for variant field shapes
 - **Built-in fallback**: Direct arXiv download if MCP fails
 - **Event loop management**: Uses `nest-asyncio` for Gradio compatibility
 - **Retry logic**: 3 attempts with exponential backoff (4s-10s)
@@ -42,17 +42,14 @@ Successfully refactored the retriever agent to use FastMCP for arXiv integration
 ### 5. **App Integration** (`app.py`)
 - **Client selection logic**:
   1. `USE_MCP_ARXIV=false` → Direct ArxivClient (default)
-  2. `USE_MCP_ARXIV=true` + `USE_LEGACY_MCP=true` → Legacy MCP
-  3. `USE_MCP_ARXIV=true` → FastMCP (default MCP mode)
-  4. Cascading fallback: FastMCP → Legacy MCP → Direct API
+  2. `USE_MCP_ARXIV=true` → FastMCP; falls back to Direct ArxivClient if FastMCP is unavailable or fails to start
 - **Auto-start server**: FastMCP server started in `__init__`
 - **Graceful cleanup**: Server shutdown in `__del__`
 - **Fallback initialization**: Direct ArxivClient as fallback for all MCP modes
 
 ### 6. **Configuration** (`.env.example`)
-- `USE_MCP_ARXIV`: Enable MCP mode (FastMCP by default)
-- `USE_LEGACY_MCP`: Force legacy MCP instead of FastMCP
-- `MCP_ARXIV_STORAGE_PATH`: Storage path for papers (all clients)
+- `USE_MCP_ARXIV`: Enable MCP mode (FastMCP)
+- `MCP_ARXIV_STORAGE_PATH`: Storage path for papers
 - `FASTMCP_SERVER_PORT`: Port for FastMCP server (default: 5555)
 
 ### 7. **Comprehensive Tests** (`tests/test_fastmcp_arxiv.py`)
@@ -79,7 +76,6 @@ Successfully refactored the retriever agent to use FastMCP for arXiv integration
 
 ### ✅ **Zero Breaking Changes**
 - All existing functionality preserved
-- Legacy MCP client remains available
 - Direct ArxivClient unchanged
 - Downstream agents (Analyzer, Synthesis, Citation) unaffected
 - State dictionary structure unchanged
@@ -98,13 +94,13 @@ Successfully refactored the retriever agent to use FastMCP for arXiv integration
 - Compatible with local and HuggingFace Spaces
 
 ### ✅ **Drop-In Compatibility**
-- All three clients implement identical interface
+- Both clients implement identical interface
 - Duck typing allows flexible client selection
 - No type checking, pure interface-based design
 - Easy to switch between clients via env variables
 
 ### ✅ **Comprehensive Testing**
-- 38 FastMCP tests + 21 legacy MCP tests
+- 38 FastMCP tests
 - Mock-based testing (no external dependencies)
 - Covers success paths, error paths, edge cases
 - Async/sync compatibility verified
@@ -124,19 +120,19 @@ Successfully refactored the retriever agent to use FastMCP for arXiv integration
          │  (Environment Variables)        │
          └─────────────────┬───────────────┘
                            │
-        ┌──────────────────┼──────────────────┐
-        │                  │                  │
-        ▼                  ▼                  ▼
-   Direct API      Legacy MCP        FastMCP (Default)
-   ArxivClient    MCPArxivClient    FastMCPArxivClient
-        │                  │                  │
-        │                  │                  ▼
-        │                  │         ┌────────────────┐
-        │                  │         │ FastMCP Server │
-        │                  │         │  (Auto-Start)  │
-        │                  │         └────────────────┘
-        │                  │                  │
-        └──────────────────┴──────────────────┘
+                ┌──────────────────┐
+                │                  │
+                ▼                  ▼
+           Direct API       FastMCP (Default)
+           ArxivClient     FastMCPArxivClient
+                │                  │
+                │                  ▼
+                │         ┌────────────────┐
+                │         │ FastMCP Server │
+                │         │  (Auto-Start)  │
+                │         └────────────────┘
+                │                  │
+                └──────────────────┘
                            │
                            ▼
          ┌─────────────────────────────────┐
@@ -162,14 +158,6 @@ No changes needed! The system continues to use direct ArxivClient by default.
 1. Install dependencies: `pip install -r requirements.txt`
 2. Set in `.env`: `USE_MCP_ARXIV=true`
 3. Restart the app - FastMCP server auto-starts
-
-### To Use Legacy MCP
-1. Set in `.env`:
-   ```bash
-   USE_MCP_ARXIV=true
-   USE_LEGACY_MCP=true
-   ```
-2. Restart the app
 
 ### To Switch Back to Direct API
 1. Set in `.env`: `USE_MCP_ARXIV=false`
@@ -234,7 +222,7 @@ Potential improvements for future versions:
 ### Client Can't Connect to Server
 - Verify server is running: Check app logs for "FastMCP server started"
 - Check firewall rules allow localhost connections
-- Try legacy MCP or direct API as fallback
+- Falls back to direct API automatically
 
 ### Papers Not Downloading
 - System will automatically fall back to direct arXiv API

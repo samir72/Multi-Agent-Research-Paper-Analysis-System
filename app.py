@@ -84,13 +84,6 @@ from utils.cache import SemanticCache
 
 # Import MCP clients if available
 try:
-    from utils.mcp_arxiv_client import MCPArxivClient
-    LEGACY_MCP_AVAILABLE = True
-except ImportError:
-    LEGACY_MCP_AVAILABLE = False
-    logger.warning("Legacy MCP client not available")
-
-try:
     from utils.fastmcp_arxiv_client import FastMCPArxivClient
     from utils.fastmcp_arxiv_server import get_server, shutdown_server
     FASTMCP_AVAILABLE = True
@@ -138,7 +131,6 @@ class ResearchPaperAnalyzer:
         storage_path = os.getenv("MCP_ARXIV_STORAGE_PATH", "data/mcp_papers")
         server_port = int(os.getenv("FASTMCP_SERVER_PORT", "5555"))
         use_mcp = os.getenv("USE_MCP_ARXIV", "false").lower() == "true"
-        use_legacy_mcp = os.getenv("USE_LEGACY_MCP", "false").lower() == "true"
 
         # Initialize arXiv clients with intelligent selection
         self.fastmcp_server = None
@@ -146,12 +138,7 @@ class ResearchPaperAnalyzer:
         fallback_client = None
 
         if use_mcp:
-            if use_legacy_mcp and LEGACY_MCP_AVAILABLE:
-                # Use legacy MCP as primary
-                logger.info("Using legacy MCP arXiv client (USE_LEGACY_MCP=true)")
-                primary_client = MCPArxivClient(storage_path=storage_path)
-                fallback_client = ArxivClient()  # Direct API as fallback
-            elif FASTMCP_AVAILABLE:
+            if FASTMCP_AVAILABLE:
                 # Use FastMCP as primary (default MCP mode)
                 logger.info("Using FastMCP arXiv client (default MCP mode)")
 
@@ -174,23 +161,12 @@ class ResearchPaperAnalyzer:
 
                 except Exception as e:
                     logger.error(f"Failed to start FastMCP: {str(e)}")
-                    logger.warning("Falling back to legacy MCP or direct API")
-
-                    if LEGACY_MCP_AVAILABLE:
-                        logger.info("Using legacy MCP as fallback")
-                        primary_client = MCPArxivClient(storage_path=storage_path)
-                    else:
-                        logger.info("Using direct arXiv API")
-                        primary_client = ArxivClient()
+                    logger.warning("Falling back to direct arXiv API")
+                    primary_client = ArxivClient()
                     fallback_client = None
-            elif LEGACY_MCP_AVAILABLE:
-                # FastMCP not available, use legacy MCP
-                logger.warning("FastMCP not available, using legacy MCP")
-                primary_client = MCPArxivClient(storage_path=storage_path)
-                fallback_client = ArxivClient()
             else:
                 # No MCP available
-                logger.warning("MCP requested but not available - using direct arXiv API")
+                logger.warning("MCP requested but FastMCP not available - using direct arXiv API")
                 primary_client = ArxivClient()
                 fallback_client = None
         else:

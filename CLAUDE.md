@@ -41,7 +41,7 @@ User Query → Retriever → Analyzer → Filter → Synthesis → Citation → 
 
 1. **RetrieverAgent** (`agents/retriever.py`):
    - Decorated with `@observe` for LangFuse tracing
-   - Searches arXiv API using `ArxivClient`, `MCPArxivClient`, or `FastMCPArxivClient` (configurable via env)
+   - Searches arXiv API using `ArxivClient` or `FastMCPArxivClient` (configurable via env)
    - Downloads PDFs to `data/papers/` (direct API) or MCP server storage (MCP mode)
    - **Intelligent Fallback**: Automatically falls back to direct API if primary MCP client fails
    - Processes PDFs with `PDFProcessor` (500-token chunks, 50-token overlap)
@@ -181,8 +181,7 @@ cp .env.example .env
 # AZURE_OPENAI_API_VERSION=2024-02-01  # optional
 
 # Optional MCP (Model Context Protocol) variables:
-# USE_MCP_ARXIV=false              # Set to 'true' to use MCP (FastMCP by default)
-# USE_LEGACY_MCP=false              # Set to 'true' to use legacy MCP instead of FastMCP
+# USE_MCP_ARXIV=false              # Set to 'true' to use FastMCP for arXiv access
 # MCP_ARXIV_STORAGE_PATH=./data/mcp_papers/  # MCP server storage path
 # FASTMCP_SERVER_PORT=5555          # Port for FastMCP server (auto-started)
 
@@ -255,19 +254,17 @@ ArxivClient uses tenacity for resilient API calls:
 
 ### MCP (Model Context Protocol) Integration
 
-The system supports **optional** integration with arXiv MCP servers as an alternative to direct arXiv API access. **FastMCP is now the default MCP implementation** when `USE_MCP_ARXIV=true`.
+The system supports **optional** integration with an arXiv MCP server (FastMCP) as an alternative to direct arXiv API access.
 
 **Architecture Overview**:
-- Three client options: Direct ArxivClient, Legacy MCPArxivClient, FastMCPArxivClient
-- All clients implement the same interface for drop-in compatibility
+- Two client options: Direct ArxivClient, FastMCPArxivClient
+- Both clients implement the same interface for drop-in compatibility
 - RetrieverAgent includes intelligent fallback from MCP to direct API
 - App selects client based on environment variables with cascading fallback
 
-**Client Selection Logic** (`app.py` lines 75-135):
+**Client Selection Logic** (`app.py` lines ~85-171):
 1. `USE_MCP_ARXIV=false` → Direct ArxivClient (default)
-2. `USE_MCP_ARXIV=true` + `USE_LEGACY_MCP=true` → Legacy MCPArxivClient
-3. `USE_MCP_ARXIV=true` (default) → FastMCPArxivClient with auto-start server
-4. Fallback cascade: FastMCP → Legacy MCP → Direct API
+2. `USE_MCP_ARXIV=true` → FastMCPArxivClient with auto-start server; falls back to Direct ArxivClient if FastMCP is unavailable or fails to start
 
 **FastMCP Implementation** (Recommended):
 
@@ -284,7 +281,7 @@ The system supports **optional** integration with arXiv MCP servers as an altern
 - Async-first design with sync wrappers for Gradio compatibility
 - Connects to FastMCP server via HTTP
 - Lazy client initialization on first use
-- Reuses legacy MCP's robust `_parse_mcp_paper()` logic
+- Defensive `_parse_mcp_paper()` normalization for variant field shapes (authors, categories, pdf_url)
 - **Built-in fallback**: Direct arXiv download if MCP fails
 - Same retry logic (3 attempts, exponential backoff)
 - Uses `nest-asyncio` for event loop compatibility
@@ -296,14 +293,7 @@ The system supports **optional** integration with arXiv MCP servers as an altern
 - Ensures paper retrieval never fails due to MCP issues
 - Detailed logging of fallback events
 
-**Legacy MCP Client** (`utils/mcp_arxiv_client.py`):
-- In-process handler calls (imports MCP server functions directly)
-- Stdio protocol for external MCP servers
-- Maintained for backward compatibility
-- Enable via `USE_LEGACY_MCP=true` when `USE_MCP_ARXIV=true`
-- All features from legacy implementation preserved
-
-**Key Features Across All MCP Clients**:
+**Key Features Across MCP Clients**:
 - Async-first design with sync wrappers
 - MCP tools: `search_papers`, `download_paper`, `list_papers`
 - Transforms MCP responses to `Paper` Pydantic objects
@@ -315,17 +305,13 @@ The system supports **optional** integration with arXiv MCP servers as an altern
 - Same state dictionary structure maintained
 - PDF processing, chunking, and RAG unchanged
 - Toggle via environment variables without code changes
-- Legacy MCP remains available for compatibility
 
 **Configuration** (`.env.example`):
 ```bash
-# Enable MCP (FastMCP by default)
+# Enable MCP (FastMCP)
 USE_MCP_ARXIV=true
 
-# Force legacy MCP instead of FastMCP (optional)
-USE_LEGACY_MCP=false
-
-# Storage path for papers (used by all MCP clients)
+# Storage path for papers (used by MCP client)
 MCP_ARXIV_STORAGE_PATH=./data/mcp_papers/
 
 # FastMCP server port
@@ -333,9 +319,7 @@ FASTMCP_SERVER_PORT=5555
 ```
 
 **Testing**:
-- FastMCP: `pytest tests/test_fastmcp_arxiv.py -v` (38 tests)
-- Legacy MCP: `pytest tests/test_mcp_arxiv_client.py -v` (21 tests)
-- Both test suites cover: search, download, caching, error handling, fallback logic
+- FastMCP: `pytest tests/test_fastmcp_arxiv.py -v` (38 tests) — covers search, download, caching, error handling, fallback logic
 
 ### PDF Processing Edge Cases
 
@@ -379,7 +363,6 @@ with patch('agents.analyzer.AzureOpenAI', return_value=mock_client):
 
 Current test coverage:
 - **AnalyzerAgent** (18 tests): Core analysis workflow and error handling
-- **MCPArxivClient** (21 tests): Legacy MCP tool integration, async/sync wrappers, response parsing
 - **FastMCPArxiv** (38 tests): FastMCP server, client, integration, error handling, fallback logic
 - **TraceReader** (`tests/test_trace_reader.py`, NEW v2.11): Correct v3 `client.api.*` call shapes/kwargs, `usage_details`/`cost_details` extraction preferring non-deprecated fields, graceful disabled-LangFuse behavior — this module had zero test coverage before v2.11, which is exactly how its v2-API breakage went unnoticed
 - **`get_verified_trace_cost`** (`tests/test_analytics.py`, NEW v2.11): Retry/poll semantics (treats a `0.0` cost as "not computed yet" and keeps polling, returns `None` only when the trace itself can't be found, never raises)
@@ -524,8 +507,7 @@ See `observability/README.md` for comprehensive documentation.
 
 **Switching between arXiv clients**:
 - Set `USE_MCP_ARXIV=false` (default) → Direct ArxivClient
-- Set `USE_MCP_ARXIV=true` → FastMCPArxivClient (default MCP)
-- Set `USE_MCP_ARXIV=true` + `USE_LEGACY_MCP=true` → Legacy MCPArxivClient
+- Set `USE_MCP_ARXIV=true` → FastMCPArxivClient (falls back to Direct ArxivClient if FastMCP is unavailable)
 - Configure `MCP_ARXIV_STORAGE_PATH` for MCP server's storage location
 - Configure `FASTMCP_SERVER_PORT` for FastMCP server port (default: 5555)
 - No code changes required - client selected automatically in `app.py`
@@ -578,7 +560,6 @@ See `observability/README.md` for comprehensive documentation.
 
 ### Utilities
 - `utils/arxiv_client.py`: Direct arXiv API client with retry logic
-- `utils/mcp_arxiv_client.py`: Legacy MCP client implementation
 - `utils/fastmcp_arxiv_client.py`: FastMCP client (recommended)
 - `utils/fastmcp_arxiv_server.py`: FastMCP server with auto-start
 - `utils/semantic_cache.py`: Query caching with embeddings

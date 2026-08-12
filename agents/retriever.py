@@ -21,11 +21,6 @@ logger = logging.getLogger(__name__)
 
 # Import MCP clients for type hints
 try:
-    from utils.mcp_arxiv_client import MCPArxivClient
-except ImportError:
-    MCPArxivClient = None
-
-try:
     from utils.fastmcp_arxiv_client import FastMCPArxivClient
 except ImportError:
     FastMCPArxivClient = None
@@ -47,7 +42,7 @@ class RetrieverAgent:
         Initialize Retriever Agent with fallback support.
 
         Args:
-            arxiv_client: Primary client (ArxivClient, MCPArxivClient, or FastMCPArxivClient)
+            arxiv_client: Primary client (ArxivClient or FastMCPArxivClient)
             pdf_processor: PDFProcessor instance
             vector_store: VectorStore instance
             embedding_generator: EmbeddingGenerator instance

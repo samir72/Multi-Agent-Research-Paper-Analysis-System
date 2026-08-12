@@ -37,7 +37,6 @@ You **MUST** configure the following environment variables in HuggingFace Spaces
 | Variable Name | Description | Default |
 |--------------|-------------|---------|
 | `USE_MCP_ARXIV` | Use MCP for arXiv access | `false` |
-| `USE_LEGACY_MCP` | Use legacy MCP instead of FastMCP | `false` |
 | `MCP_ARXIV_STORAGE_PATH` | MCP server storage path | `./data/mcp_papers/` |
 | `FASTMCP_SERVER_PORT` | FastMCP server port | `5555` |
 

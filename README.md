@@ -59,7 +59,7 @@ A production-ready multi-agent system that analyzes academic papers from arXiv, 
 - **Progressive UI**: Real-time updates as papers are analyzed with streaming results
 - **Smart Quality Filtering**: Automatically excludes failed analyses (0% confidence) from synthesis
 - **Enhanced UX**: Clickable PDF links, paper titles + confidence scores, status indicators
-- **Comprehensive Testing**: 96 total tests (24 analyzer + 21 legacy MCP + 38 FastMCP + 15 schema validators) with diagnostic tools
+- **Comprehensive Testing**: 75 total tests (24 analyzer + 38 FastMCP + 15 schema validators) with diagnostic tools
 - **Performance Analytics**: Track latency, token usage, costs, and error rates across all agents
 
 ## Architecture
@@ -122,9 +122,9 @@ User Query → Retriever → [Has papers?]
 - **Agent Framework**: Generator-based streaming workflow with progressive UI updates
 - **Parallel Processing**: ThreadPoolExecutor (4 concurrent workers) with as_completed for streaming
 - **UI**: Gradio 6.0.2 with tabbed interface and real-time updates
-- **Data Source**: arXiv API (direct) or FastMCP/Legacy MCP server (optional, auto-start)
+- **Data Source**: arXiv API (direct) or FastMCP server (optional, auto-start)
 - **MCP Integration**: FastMCP server with auto-start, intelligent fallback (MCP → Direct API)
-- **Testing**: pytest with comprehensive test suite (96 tests, pytest-asyncio for async tests)
+- **Testing**: pytest with comprehensive test suite (75 tests, pytest-asyncio for async tests)
 - **Type Safety**: Pydantic V2 schemas with multi-layer data validation
 - **Pricing**: Configurable pricing system (JSON + environment overrides)
 
@@ -177,7 +177,6 @@ Optional:
 
 **MCP (Model Context Protocol) Support** (Optional):
 - `USE_MCP_ARXIV`: Set to `true` to use FastMCP server (auto-start) instead of direct arXiv API (default: `false`)
-- `USE_LEGACY_MCP`: Set to `true` to force legacy MCP instead of FastMCP (default: `false`)
 - `MCP_ARXIV_STORAGE_PATH`: Path where MCP server stores papers (default: `./data/mcp_papers/`)
 - `FASTMCP_SERVER_PORT`: Port for FastMCP server (default: `5555`)
 
@@ -201,7 +200,7 @@ This performs a live check against the LangFuse API (not just a presence check) 
 
 ### MCP (Model Context Protocol) Integration
 
-The system supports using FastMCP or Legacy MCP servers as an alternative to direct arXiv API access. **FastMCP is the recommended option** with auto-start capability and no manual server setup required.
+The system supports using a FastMCP server as an alternative to direct arXiv API access, with auto-start capability and no manual server setup required.
 
 **Quick Start (FastMCP - Recommended):**
 
@@ -221,33 +220,21 @@ python app.py
 
 **Advanced Configuration:**
 
-For Legacy MCP (external server):
-```bash
-USE_MCP_ARXIV=true
-USE_LEGACY_MCP=true
-MCP_ARXIV_STORAGE_PATH=/path/to/papers
-```
-
 For custom FastMCP port:
 ```bash
 FASTMCP_SERVER_PORT=5556  # Default is 5555
 ```
 
 **Features:**
-- **FastMCP (Default)**:
-  - Auto-start server (no manual setup)
-  - Background thread execution
-  - Singleton pattern (one server per app)
-  - Graceful shutdown on app exit
-  - Compatible with local & HuggingFace Spaces
-- **Legacy MCP**:
-  - External MCP server via stdio protocol
-  - Backward compatible with existing setups
-- **Both modes**:
-  - Intelligent cascading fallback (MCP → Direct API)
-  - Same functionality as direct API
-  - Zero breaking changes to workflow
-  - Comprehensive logging and diagnostics
+- Auto-start server (no manual setup)
+- Background thread execution
+- Singleton pattern (one server per app)
+- Graceful shutdown on app exit
+- Compatible with local & HuggingFace Spaces
+- Intelligent cascading fallback (MCP → Direct API)
+- Same functionality as direct API
+- Zero breaking changes to workflow
+- Comprehensive logging and diagnostics
 
 **Troubleshooting:**
 - FastMCP won't start? Check if port 5555 is available: `netstat -an | grep 5555`
@@ -330,7 +317,6 @@ Multi-Agent-Research-Paper-Analysis-System/
 ├── utils/
 │   ├── __init__.py
 │   ├── arxiv_client.py            # arXiv API wrapper (direct API)
-│   ├── mcp_arxiv_client.py        # Legacy arXiv MCP client (optional)
 │   ├── fastmcp_arxiv_server.py    # FastMCP server (auto-start)
 │   ├── fastmcp_arxiv_client.py    # FastMCP client (async-first)
 │   ├── pdf_processor.py           # PDF parsing & chunking (with validation)
@@ -347,19 +333,15 @@ Multi-Agent-Research-Paper-Analysis-System/
 ├── tests/
 │   ├── __init__.py
 │   ├── test_analyzer.py           # Unit tests for analyzer agent (24 tests)
-│   ├── test_mcp_arxiv_client.py   # Unit tests for legacy MCP client (21 tests)
 │   ├── test_fastmcp_arxiv.py      # Unit tests for FastMCP (38 tests)
 │   ├── test_schema_validators.py  # Unit tests for Pydantic validators (15 tests)
 │   ├── test_data_validation.py    # Data validation test script
 │   ├── test_trace_reader.py       # Unit tests for TraceReader v3 query API (NEW v2.11)
 │   └── test_analytics.py          # Unit tests for get_verified_trace_cost (NEW v2.11)
-├── test_mcp_diagnostic.py         # MCP setup diagnostic script
 ├── REFACTORING_SUMMARY.md         # LangGraph + LangFuse refactoring details (NEW v2.6)
 ├── BUGFIX_MSGPACK_SERIALIZATION.md # msgpack serialization fix documentation (NEW v2.6)
 ├── FASTMCP_REFACTOR_SUMMARY.md    # FastMCP architecture guide
 ├── DATA_VALIDATION_FIX.md         # Data validation documentation
-├── MCP_FIX_DOCUMENTATION.md       # MCP troubleshooting guide
-├── MCP_FIX_SUMMARY.md             # MCP fix quick reference
 └── data/                           # Created at runtime
     ├── papers/                     # Downloaded PDFs (direct API, cached)
     ├── mcp_papers/                 # Downloaded PDFs (MCP mode, cached)
@@ -499,7 +481,7 @@ pytest tests/test_analyzer.py::TestAnalyzerAgent::test_analyze_paper_success -v
 
 ### Test Coverage
 
-**Current Test Suite (96 tests total):**
+**Current Test Suite (75 tests total):**
 
 1. **Analyzer Agent** (`tests/test_analyzer.py`): 24 comprehensive tests
    - Unit tests for initialization, prompt creation, and analysis
@@ -509,16 +491,7 @@ pytest tests/test_analyzer.py::TestAnalyzerAgent::test_analyze_paper_success -v
    - Azure OpenAI client initialization tests
    - **NEW:** 6 normalization tests for LLM response edge cases (nested lists, mixed types, missing fields)
 
-2. **Legacy MCP arXiv Client** (`tests/test_mcp_arxiv_client.py`): 21 comprehensive tests
-   - Async/sync wrapper tests for all client methods
-   - MCP tool call mocking and response parsing
-   - Error handling and fallback mechanisms
-   - PDF caching and storage path management
-   - Integration with Paper schema validation
-   - Tool discovery and diagnostics
-   - Direct download fallback scenarios
-
-3. **FastMCP Integration** (`tests/test_fastmcp_arxiv.py`): 38 comprehensive tests
+2. **FastMCP Integration** (`tests/test_fastmcp_arxiv.py`): 38 comprehensive tests
    - **Client tests** (15 tests):
      - Initialization and configuration
      - Paper data parsing (all edge cases)
@@ -540,7 +513,7 @@ pytest tests/test_analyzer.py::TestAnalyzerAgent::test_analyze_paper_success -v
      - Multi-paper caching
      - Compatibility with existing components
 
-4. **Schema Validators** (`tests/test_schema_validators.py`): 15 comprehensive tests ✨ NEW
+3. **Schema Validators** (`tests/test_schema_validators.py`): 15 comprehensive tests ✨ NEW
    - **Analysis validators** (5 tests):
      - Nested list flattening in citations, key_findings, limitations
      - Mixed types (strings, None, numbers) normalization
@@ -555,7 +528,7 @@ pytest tests/test_analyzer.py::TestAnalyzerAgent::test_analyze_paper_success -v
      - research_gaps and papers_analyzed normalization
      - End-to-end Pydantic object creation validation
 
-5. **Data Validation** (`tests/test_data_validation.py`): Standalone validation tests
+4. **Data Validation** (`tests/test_data_validation.py`): Standalone validation tests
    - Pydantic validator behavior (authors, categories normalization)
    - PDF processor resilience with malformed data
    - End-to-end data flow validation
@@ -593,26 +566,6 @@ Tests use:
 - **unittest.mock**: Mocking external dependencies (Azure OpenAI, RAG components, MCP tools)
 - **Pydantic models**: Type-safe test data structures
 - **Isolated testing**: No external API calls in unit tests
-
-### MCP Diagnostic Testing
-
-For MCP integration troubleshooting, run the diagnostic script:
-
-```bash
-# Test MCP setup and configuration
-python test_mcp_diagnostic.py
-```
-
-This diagnostic tool:
-- ✅ Validates environment configuration (`USE_MCP_ARXIV`, `MCP_ARXIV_STORAGE_PATH`)
-- ✅ Verifies storage directory setup and permissions
-- ✅ Lists available MCP tools via tool discovery
-- ✅ Tests search functionality with real queries
-- ✅ Tests download with file verification
-- ✅ Shows file system state before/after operations
-- ✅ Provides detailed logging for troubleshooting
-
-See [MCP_FIX_DOCUMENTATION.md](MCP_FIX_DOCUMENTATION.md) for detailed troubleshooting guidance.
 
 ## Performance
 

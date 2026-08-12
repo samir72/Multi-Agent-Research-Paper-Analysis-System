@@ -238,7 +238,7 @@ class AnalyzerAgent:
 **Benefits:**
 
 - **Testability**: Easy to mock dependencies in tests
-- **Flexibility**: Different implementations can be injected (e.g., ArxivClient vs MCPArxivClient)
+- **Flexibility**: Different implementations can be injected (e.g., ArxivClient vs FastMCPArxivClient)
 - **Clarity**: Dependencies are explicit in constructor signature
 
 **Initialization in app.py:**
@@ -324,7 +324,7 @@ workflow.add_edge("citation", END)
 
 **Core Responsibilities:**
 1. Search arXiv for papers matching user query and category
-2. Download PDFs via configurable clients (Direct API, Legacy MCP, FastMCP)
+2. Download PDFs via configurable clients (Direct API, FastMCP)
 3. Process PDFs into 500-token chunks with 50-token overlap
 4. Generate embeddings using Azure OpenAI text-embedding-3-small
 5. Store chunks in ChromaDB vector database
@@ -349,7 +349,7 @@ state["errors"].append("Failed to download paper X")  # On partial failure
 ```python
 def __init__(
     self,
-    arxiv_client,        # ArxivClient | MCPArxivClient | FastMCPArxivClient
+    arxiv_client,        # ArxivClient | FastMCPArxivClient
     pdf_processor,       # PDFProcessor
     embedding_generator, # EmbeddingGenerator
     vector_store,        # VectorStore (ChromaDB)
