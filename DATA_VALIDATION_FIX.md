@@ -59,9 +59,9 @@ def normalize_authors(cls, v):
         return []
 ```
 
-### 2. MCP Client Data Parsing (`utils/mcp_arxiv_client.py`)
+### 2. MCP Client Data Parsing (`utils/fastmcp_arxiv_client.py`)
 
-Enhanced `_parse_mcp_paper()` method with explicit type checking and normalization:
+Enhanced `_parse_mcp_paper()` method with explicit type checking and normalization (originally added to the legacy MCP client, since removed; the FastMCP client is now the sole MCP data path and carries the same logic):
 
 **Features:**
 - **Pre-validation**: Checks and normalizes data types before creating Paper object
@@ -70,10 +70,10 @@ Enhanced `_parse_mcp_paper()` method with explicit type checking and normalizati
 - **Detailed error context**: Logs raw paper data on parsing failure
 
 **Key Improvements:**
-- Authors: Explicit type checking and dict extraction (lines 209-225)
-- Categories: Same robust handling (lines 227-243)
-- Title, abstract, pdf_url: String normalization (lines 245-270)
-- Published date: Enhanced datetime parsing with fallbacks (lines 195-207)
+- Authors: Explicit type checking and dict extraction (lines 100-114)
+- Categories: Same robust handling (lines 116-130)
+- Title, abstract, pdf_url: String normalization (lines 132-157)
+- Published date: Enhanced datetime parsing with fallbacks (lines 86-98)
 
 ### 3. PDF Processor Error Handling (`utils/pdf_processor.py`)
 
@@ -171,7 +171,7 @@ Created comprehensive test suite (`test_data_validation.py`) that verifies:
    - Added 6 Pydantic validators for Paper class
    - Normalizes authors, categories, title, abstract, pdf_url
 
-2. **utils/mcp_arxiv_client.py** (lines 175-290)
+2. **utils/fastmcp_arxiv_client.py** (lines 66-176)
    - Enhanced `_parse_mcp_paper()` method
    - Added explicit type checking for all fields
    - Improved logging and error handling
@@ -287,7 +287,7 @@ If this fix causes issues, you can rollback by:
 
 1. **Revert the files**:
    ```bash
-   git checkout HEAD~1 utils/schemas.py utils/mcp_arxiv_client.py utils/pdf_processor.py agents/retriever.py
+   git checkout HEAD~1 utils/schemas.py utils/fastmcp_arxiv_client.py utils/pdf_processor.py agents/retriever.py
    ```
 
 2. **Remove the test file**:

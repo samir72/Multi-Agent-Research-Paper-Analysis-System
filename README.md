@@ -59,7 +59,7 @@ A production-ready multi-agent system that analyzes academic papers from arXiv, 
 - **Progressive UI**: Real-time updates as papers are analyzed with streaming results
 - **Smart Quality Filtering**: Automatically excludes failed analyses (0% confidence) from synthesis
 - **Enhanced UX**: Clickable PDF links, paper titles + confidence scores, status indicators
-- **Comprehensive Testing**: 75 total tests (24 analyzer + 38 FastMCP + 15 schema validators) with diagnostic tools
+- **Comprehensive Testing**: 77 total tests (24 analyzer + 38 FastMCP + 15 schema validators) with diagnostic tools
 - **Performance Analytics**: Track latency, token usage, costs, and error rates across all agents
 
 ## Architecture
@@ -124,7 +124,7 @@ User Query → Retriever → [Has papers?]
 - **UI**: Gradio 6.0.2 with tabbed interface and real-time updates
 - **Data Source**: arXiv API (direct) or FastMCP server (optional, auto-start)
 - **MCP Integration**: FastMCP server with auto-start, intelligent fallback (MCP → Direct API)
-- **Testing**: pytest with comprehensive test suite (75 tests, pytest-asyncio for async tests)
+- **Testing**: pytest with comprehensive test suite (77 tests, pytest-asyncio for async tests)
 - **Type Safety**: Pydantic V2 schemas with multi-layer data validation
 - **Pricing**: Configurable pricing system (JSON + environment overrides)
 
@@ -481,7 +481,7 @@ pytest tests/test_analyzer.py::TestAnalyzerAgent::test_analyze_paper_success -v
 
 ### Test Coverage
 
-**Current Test Suite (75 tests total):**
+**Current Test Suite (77 tests total):**
 
 1. **Analyzer Agent** (`tests/test_analyzer.py`): 24 comprehensive tests
    - Unit tests for initialization, prompt creation, and analysis

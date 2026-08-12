@@ -19,13 +19,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Import MCP clients for type hints
-try:
-    from utils.fastmcp_arxiv_client import FastMCPArxivClient
-except ImportError:
-    FastMCPArxivClient = None
-
-
 
 class RetrieverAgent:
     """Agent for retrieving and processing papers from arXiv with intelligent fallback."""
