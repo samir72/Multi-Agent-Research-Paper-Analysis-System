@@ -748,7 +748,30 @@ For issues, questions, or feature requests, please:
 
 ## Changelog
 
-### Version 2.11 - July 2026 (Latest)
+### Version 2.12 - August 2026 (Latest)
+
+**🧹 Removed: Legacy MCP Client**
+
+The three-tier arXiv client architecture (Direct API / Legacy MCP / FastMCP) was reduced to two tiers. Legacy MCP (`MCPArxivClient`) provided no functional advantage over the other two: all three ultimately called the same `arxiv.Client()` under the hood, and it wasn't even real MCP transport — it was in-process function calls into the third-party `arxiv-mcp-server` package, dressed up to mimic MCP's response shape, with no subprocess/stdio and no interoperability with actual external MCP clients. CLAUDE.md already documented it as compatibility-only.
+
+- ✅ **Deleted** `utils/mcp_arxiv_client.py`, 5 legacy-only test files (`test_mcp_arxiv_client.py`, `test_mcp_refactored.py`, `test_mcp_debug.py`, `test_mcp_diagnostic.py`, `test_app_integration.py` — the last was already stale/broken against current `app.py` logic), and `MCP_FIX_DOCUMENTATION.md`/`MCP_FIX_SUMMARY.md` (exclusively about a Legacy MCP storage-path bug).
+- ✅ **Simplified `app.py`'s client-selection cascade** from 4 branches to 3: `USE_MCP_ARXIV=false` (default) → `ArxivClient`; `USE_MCP_ARXIV=true` → `FastMCPArxivClient` with `ArxivClient` as fallback, degrading straight to `ArxivClient` if FastMCP is unavailable or fails to start. The `USE_LEGACY_MCP` env var is gone.
+- ✅ **Dropped the `arxiv-mcp-server` dependency** from `requirements.txt` — confirmed via `pip show` that nothing else required it. `mcp`, `fastmcp`, and `nest-asyncio` all stay, since FastMCP still needs them.
+- ✅ **Updated `.env.example` and current-state docs** (README, CLAUDE.md, `FASTMCP_REFACTOR_SUMMARY.md`, `HUGGINGFACE_DEPLOYMENT.md`, `AGENTS.md`) to drop Legacy MCP references; version-history/changelog entries describing what shipped at the time were deliberately left untouched as historical record.
+- ✅ **Verified**: full `pytest` suite collects with zero import errors post-removal (the only failures are pre-existing, unrelated ones already present in `test_analyzer.py`/`test_fastmcp_arxiv.py` before this change); `app.py` initializes cleanly and selects the correct client under both `USE_MCP_ARXIV=true` and `=false`.
+- ✅ **Follow-up review pass** (ultrareview) caught and fixed 3 nits: a dead `FastMCPArxivClient` import guard left orphaned in `agents/retriever.py`, `DATA_VALIDATION_FIX.md` still describing the deleted `utils/mcp_arxiv_client.py` (retargeted to `FastMCPArxivClient._parse_mcp_paper()`, where the same logic now lives), and a test-count arithmetic error in this README (24 + 38 + 15 = 77, not 75).
+
+**🔎 Evaluated: AlphaXiv Hosted MCP Server (Not Adopted)**
+
+Investigated replacing FastMCP with `langchain-mcp-adapters` connected to alphaXiv's hosted MCP server (`https://api.alphaxiv.org/mcp/v1`). `langchain-mcp-adapters` itself was a solid fit (async `tool.ainvoke()` for procedural calls, header-based auth for hosted servers, a `tool_interceptors` hook well-suited for LangFuse tracing), but alphaXiv's tool surface (`discover_papers`, `get_paper_content`) has no arXiv category filtering and returns AI-generated text/reports rather than raw PDF bytes — not a like-for-like replacement for what `PDFProcessor`'s chunking pipeline needs. No code changed; FastMCP remains the current MCP tier.
+
+**Files Modified:**
+- Deleted: `utils/mcp_arxiv_client.py`, 5 test files, `MCP_FIX_DOCUMENTATION.md`, `MCP_FIX_SUMMARY.md`
+- Edited: `app.py`, `agents/retriever.py`, `requirements.txt`, `.env.example`, `DATA_VALIDATION_FIX.md`, `README.md`, `CLAUDE.md`, `FASTMCP_REFACTOR_SUMMARY.md`, `HUGGINGFACE_DEPLOYMENT.md`, `AGENTS.md`
+
+---
+
+### Version 2.11 - July 2026
 
 **🐛 Fix: Observability Read API Was Completely Broken**
 
