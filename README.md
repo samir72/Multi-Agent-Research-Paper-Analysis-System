@@ -340,11 +340,17 @@ Multi-Agent-Research-Paper-Analysis-System/
 │   └── pricing.json               # Model pricing configuration
 ├── scripts/
 │   ├── validate_langfuse_keys.py  # Live LangFuse API key validation CLI (NEW v2.9)
-│   └── validate_responses_api.py  # Live Azure OpenAI Responses API availability check (NEW v2.13)
+│   ├── validate_responses_api.py  # Live Azure OpenAI Responses API availability check (NEW v2.13)
+│   ├── validate_azure_embeddings.py # Live Azure OpenAI embedding deployment validation CLI
+│   ├── test_llm_deployment.py     # Quick live chat-completion sanity check CLI
+│   ├── list_azure_deployments.sh  # List deployments on the Azure OpenAI resource via curl
+│   ├── test_api_versions.sh       # Probe which API versions work against the deployment via curl
+│   └── test_embedding_curl.sh     # Test the embedding deployment directly via curl
 ├── tests/
 │   ├── __init__.py
-│   ├── test_analyzer.py           # Unit tests for analyzer agent (24 tests)
-│   ├── test_fastmcp_arxiv.py      # Unit tests for FastMCP (38 tests)
+│   ├── test_analyzer.py           # Unit tests for analyzer agent (23 tests, incl. Responses API path)
+│   ├── test_synthesis.py          # Unit tests for synthesis agent (11 tests, incl. Responses API path)
+│   ├── test_fastmcp_arxiv.py      # Unit tests for FastMCP (29 tests)
 │   ├── test_schema_validators.py  # Unit tests for Pydantic validators (15 tests)
 │   ├── test_data_validation.py    # Data validation test script
 │   ├── test_trace_reader.py       # Unit tests for TraceReader v3 query API (NEW v2.11)
@@ -493,39 +499,28 @@ pytest tests/test_analyzer.py::TestAnalyzerAgent::test_analyze_paper_success -v
 
 ### Test Coverage
 
-**Current Test Suite (90 tests total):**
+**Current Test Suite (105 tests total; counts as of the last `pytest --collect-only` audit — re-run it rather than trusting these numbers indefinitely, this section has drifted from the real collected count before):**
 
-1. **Analyzer Agent** (`tests/test_analyzer.py`): 24 comprehensive tests
+1. **Analyzer Agent** (`tests/test_analyzer.py`): 23 tests
    - Unit tests for initialization, prompt creation, and analysis
-   - Error handling and edge cases
-   - State management and workflow tests
-   - Integration tests with mocked dependencies
-   - Azure OpenAI client initialization tests
-   - **NEW:** 6 normalization tests for LLM response edge cases (nested lists, mixed types, missing fields)
+   - Error handling and edge cases (13 tests, `TestAnalyzerAgent`)
+   - Integration/state-transformation tests (2 tests, `TestAnalyzerAgentIntegration`)
+   - Normalization tests for LLM response edge cases — nested lists, mixed types, missing fields (6 tests, `TestAnalyzerNormalization`)
+   - **NEW:** `USE_RESPONSES_API=true` path — success and fallback-on-error, mocked (2 tests, `TestAnalyzerResponsesAPI`)
 
-2. **FastMCP Integration** (`tests/test_fastmcp_arxiv.py`): 38 comprehensive tests
-   - **Client tests** (15 tests):
-     - Initialization and configuration
-     - Paper data parsing (all edge cases)
-     - Async/sync search operations
-     - Async/sync download operations
-     - Caching behavior
-   - **Error handling tests** (12 tests):
-     - Search failures and fallback logic
-     - Download failures and direct API fallback
-     - Network errors and retries
-     - Invalid response handling
-   - **Server tests** (6 tests):
-     - Server lifecycle management
-     - Singleton pattern verification
-     - Port configuration
-     - Graceful shutdown
-   - **Integration tests** (5 tests):
-     - End-to-end search and download
-     - Multi-paper caching
-     - Compatibility with existing components
+2. **Synthesis Agent** (`tests/test_synthesis.py`): 11 tests ✨ NEW — this module had zero tests before
+   - Initialization and prompt creation
+   - `synthesize()`/`run()` success and error paths, including mismatched papers/analyses handling
+   - Response normalization for nested-list edge cases
+   - `USE_RESPONSES_API=true` path — success and fallback-on-error, mocked
 
-3. **Schema Validators** (`tests/test_schema_validators.py`): 15 comprehensive tests ✨ NEW
+3. **FastMCP Integration** (`tests/test_fastmcp_arxiv.py`): 29 tests
+   - Client tests: initialization, paper data parsing, async/sync search and download, caching, error handling and fallback logic (25 tests, `TestFastMCPArxivClient`)
+   - Server tests: lifecycle, singleton pattern, tool registration (3 tests, `TestArxivFastMCPServer`)
+   - Integration test: client/server compatibility (1 test, `TestFastMCPIntegration`)
+   - Mocks patch the module-level `Client` import as an async context manager, matching the client's real per-operation `async with Client(self.server_url) as client:` pattern (not a `_get_client()` method, which doesn't exist on the class)
+
+4. **Schema Validators** (`tests/test_schema_validators.py`): 15 comprehensive tests ✨ NEW
    - **Analysis validators** (5 tests):
      - Nested list flattening in citations, key_findings, limitations
      - Mixed types (strings, None, numbers) normalization
@@ -540,12 +535,12 @@ pytest tests/test_analyzer.py::TestAnalyzerAgent::test_analyze_paper_success -v
      - research_gaps and papers_analyzed normalization
      - End-to-end Pydantic object creation validation
 
-4. **Data Validation** (`tests/test_data_validation.py`): Standalone validation tests
+5. **Data Validation** (`tests/test_data_validation.py`): Standalone validation tests
    - Pydantic validator behavior (authors, categories normalization)
    - PDF processor resilience with malformed data
    - End-to-end data flow validation
 
-5. **Orchestration** (`tests/test_orchestration.py`): 8 tests ✨ NEW v2.13 — `orchestration/` had zero test coverage before this
+6. **Orchestration** (`tests/test_orchestration.py`): 8 tests ✨ NEW v2.13 — `orchestration/` had zero test coverage before this
    - **Reducer correctness**: fan-out over N papers produces exactly N merged `analyses` entries (guards against a missing/misconfigured reducer silently collapsing results to 1)
    - **Barrier semantics**: downstream nodes (filter/synthesis/citation) run exactly once per workflow execution, not once per fanned-out branch
    - **Partial-failure isolation**: one paper's analysis failing doesn't affect others' results, and is correctly reported in `errors` without being added to `analyses`
@@ -570,10 +565,11 @@ pytest tests/test_analyzer.py::TestAnalyzerAgent::test_analyze_paper_success -v
 - ✅ Recursive list flattening and type coercion ✨ NEW
 - ✅ Triple-layer validation (prompts + agents + schemas) ✨ NEW
 - ✅ LangGraph `Send` fan-out reducer correctness, barrier semantics, and partial-failure isolation ✨ NEW v2.13
+- ✅ Cross-paper synthesis success/error paths and mismatched papers/analyses handling ✨ NEW
+- ✅ Azure OpenAI Responses API structured-output path — success and fallback-on-error, for both Analyzer and Synthesis agents ✨ NEW
 
 **Coming Soon:**
 - Tests for Retriever Agent (arXiv download, PDF processing)
-- Tests for Synthesis Agent (cross-paper comparison)
 - Tests for Citation Agent (APA formatting, validation)
 - RAG component tests (vector store, embeddings, retrieval)
 

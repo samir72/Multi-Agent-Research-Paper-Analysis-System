@@ -2071,14 +2071,13 @@ workflow.invoke(state, config={"thread_id": thread_id})
 **Configuration:**
 
 ```python
-# app.py:464-470
-config = {
-    "configurable": {
-        "thread_id": session_id  # Unique per execution
-    }
-}
-
-final_state = run_workflow(workflow_app, initial_state, config, progress)
+# app.py:431-436 -- run_workflow() builds the config dict internally from thread_id
+final_state = run_workflow(
+    app=workflow_app,
+    initial_state=initial_state,
+    thread_id=session_id,  # Unique per execution
+    use_streaming=False,
+)
 ```
 
 **Why Checkpointing?**
@@ -2869,7 +2868,9 @@ WARNING: No valid analyses after filtering. Ending workflow.
 
    reader = TraceReader()
    traces = reader.get_traces(session_id="session-abc123")
-   analyzer_spans = reader.filter_by_agent(traces, "analyzer_agent")
+   # Pass trace_id when known -- an unscoped call scans by name across the
+   # whole project's history and can be slow on a high-volume agent name.
+   analyzer_spans = reader.filter_by_agent("analyzer_agent", trace_id=traces[0].id)
 
    for span in analyzer_spans:
        print(f"Paper: {span.metadata.get('arxiv_id')}")
@@ -3128,7 +3129,7 @@ def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
 
 ```python
 # app.py
-final_state = run_workflow(workflow_app, initial_state, config, progress)
+final_state = run_workflow(app=workflow_app, initial_state=initial_state, thread_id=session_id)
 
 # Inspect final state
 print(f"Final state keys: {final_state.keys()}")
