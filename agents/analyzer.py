@@ -381,6 +381,18 @@ CRITICAL JSON FORMATTING RULES:
         try:
             logger.info("=== Analyzer Agent Started ===")
 
+            # Real callers always populate these via create_initial_state(), but
+            # run() is a public method any external caller could invoke directly
+            # with a partial state -- default them so error reporting and token
+            # accumulation below can't themselves raise KeyError. Without the
+            # token_usage default, a state missing only that key would still
+            # discard an already-successfully-computed analysis: verified live,
+            # the LLM call and Analysis construction complete fine, then the
+            # unguarded state["token_usage"]["input_tokens"] += below raises,
+            # and the caught exception drops the just-computed result entirely.
+            state.setdefault("errors", [])
+            state.setdefault("token_usage", {"input_tokens": 0, "output_tokens": 0, "embedding_tokens": 0})
+
             papers = state.get("papers", [])
             if not papers:
                 error_msg = "No papers to analyze"

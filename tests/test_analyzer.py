@@ -219,7 +219,8 @@ class TestAnalyzerAgent:
         """Test run method with papers in state."""
         state = {
             "papers": [sample_paper],
-            "errors": []
+            "errors": [],
+            "token_usage": {"input_tokens": 0, "output_tokens": 0, "embedding_tokens": 0},
         }
 
         result_state = analyzer_agent.run(state)
@@ -247,7 +248,8 @@ class TestAnalyzerAgent:
 
         state = {
             "papers": papers,
-            "errors": []
+            "errors": [],
+            "token_usage": {"input_tokens": 0, "output_tokens": 0, "embedding_tokens": 0},
         }
 
         result_state = analyzer_agent.run(state)
@@ -277,7 +279,8 @@ class TestAnalyzerAgent:
 
         state = {
             "papers": [sample_paper],
-            "errors": []
+            "errors": [],
+            "token_usage": {"input_tokens": 0, "output_tokens": 0, "embedding_tokens": 0},
         }
 
         result_state = analyzer_agent.run(state)
@@ -315,7 +318,9 @@ class TestAnalyzerAgent:
                 mock_azure.assert_called_once_with(
                     api_key="test_key_123",
                     api_version="2024-02-01",
-                    azure_endpoint="https://test-endpoint.openai.azure.com"
+                    azure_endpoint="https://test-endpoint.openai.azure.com",
+                    timeout=60,
+                    max_retries=2,
                 )
 
     def test_multiple_query_retrieval(self, analyzer_agent, sample_paper, mock_rag_retriever):
@@ -351,6 +356,100 @@ class TestAnalyzerAgent:
         # Verify analysis still succeeds despite duplicates
         assert isinstance(analysis, Analysis)
         assert mock_rag_retriever.format_context.called
+
+
+class TestAnalyzerResponsesAPI:
+    """
+    Coverage for the USE_RESPONSES_API=true path (analyzer.py's
+    client.responses.create() branch) -- previously untested anywhere in the
+    repo despite being live-verified manually. Mirrors the Chat Completions
+    fixtures above but adds a `.responses.create` mock alongside `.chat.completions.create`
+    so tests can assert on which one was actually used.
+    """
+
+    @staticmethod
+    def _analysis_json():
+        return json.dumps({
+            "methodology": "Deep learning approach using convolutional neural networks",
+            "key_findings": ["95% accuracy on test set"],
+            "conclusions": "The proposed method achieves state-of-the-art results",
+            "limitations": ["Limited to specific image domains"],
+            "main_contributions": ["Novel architecture design"],
+            "citations": ["Methodology section"],
+        })
+
+    @pytest.fixture
+    def mock_responses_api_client(self):
+        """Mock Azure OpenAI client exposing both responses.create and chat.completions.create."""
+        mock_client = MagicMock()
+
+        mock_resp_api_response = MagicMock()
+        mock_resp_api_response.output_text = self._analysis_json()
+        mock_resp_api_response.usage.input_tokens = 111
+        mock_resp_api_response.usage.output_tokens = 22
+        mock_client.responses.create.return_value = mock_resp_api_response
+
+        mock_chat_response = MagicMock()
+        mock_chat_response.choices[0].message.content = self._analysis_json()
+        mock_chat_response.usage.prompt_tokens = 999
+        mock_chat_response.usage.completion_tokens = 888
+        mock_client.chat.completions.create.return_value = mock_chat_response
+
+        return mock_client
+
+    @pytest.fixture
+    def analyzer_agent_responses_api(self, mock_rag_retriever, mock_responses_api_client):
+        """AnalyzerAgent constructed with USE_RESPONSES_API=true."""
+        with patch.dict(os.environ, {
+            "AZURE_OPENAI_API_KEY": "test_key",
+            "AZURE_OPENAI_ENDPOINT": "https://test.openai.azure.com",
+            "AZURE_OPENAI_API_VERSION": "2025-03-01-preview",
+            "AZURE_OPENAI_DEPLOYMENT_NAME": "test-deployment",
+            "USE_RESPONSES_API": "true",
+        }):
+            with patch('agents.analyzer.AzureOpenAI', return_value=mock_responses_api_client):
+                agent = AnalyzerAgent(
+                    rag_retriever=mock_rag_retriever,
+                    model="test-deployment",
+                    temperature=0.0,
+                )
+                assert agent.use_responses_api is True
+                return agent
+
+    def test_responses_api_success(self, analyzer_agent_responses_api, sample_paper, mock_responses_api_client):
+        """Responses API path is used, parsed correctly, and Chat Completions is never called."""
+        analysis = analyzer_agent_responses_api.analyze_paper(sample_paper, top_k_chunks=10)
+
+        assert isinstance(analysis, Analysis)
+        assert analysis.methodology == "Deep learning approach using convolutional neural networks"
+        assert analysis.confidence_score > 0.0
+
+        mock_responses_api_client.responses.create.assert_called_once()
+        mock_responses_api_client.chat.completions.create.assert_not_called()
+
+        # Responses API's input_tokens/output_tokens usage fields, not Chat
+        # Completions' prompt_tokens/completion_tokens, must land in batch_tokens.
+        assert analyzer_agent_responses_api.batch_tokens["input"] == 111
+        assert analyzer_agent_responses_api.batch_tokens["output"] == 22
+
+    def test_responses_api_fallback_on_error(self, analyzer_agent_responses_api, sample_paper, mock_responses_api_client):
+        """A Responses API error falls back to Chat Completions and still returns a real analysis."""
+        mock_responses_api_client.responses.create.side_effect = Exception("Responses API unavailable")
+
+        analysis = analyzer_agent_responses_api.analyze_paper(sample_paper, top_k_chunks=10)
+
+        # Fallback succeeded -- this must NOT be the "Analysis failed" degraded result.
+        assert isinstance(analysis, Analysis)
+        assert analysis.methodology == "Deep learning approach using convolutional neural networks"
+        assert analysis.confidence_score > 0.0
+
+        mock_responses_api_client.responses.create.assert_called_once()
+        mock_responses_api_client.chat.completions.create.assert_called_once()
+
+        # Chat Completions' prompt_tokens/completion_tokens fields, not the
+        # Responses API's, must land in batch_tokens for the fallback call.
+        assert analyzer_agent_responses_api.batch_tokens["input"] == 999
+        assert analyzer_agent_responses_api.batch_tokens["output"] == 888
 
 
 class TestAnalyzerNormalization:
@@ -515,7 +614,8 @@ class TestAnalyzerAgentIntegration:
         initial_state = {
             "query": "What are the latest advances in deep learning?",
             "papers": [sample_paper],
-            "errors": []
+            "errors": [],
+            "token_usage": {"input_tokens": 0, "output_tokens": 0, "embedding_tokens": 0},
         }
 
         final_state = analyzer_agent.run(initial_state)

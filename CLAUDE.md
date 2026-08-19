@@ -75,7 +75,7 @@ User Query → Retriever → Analyzer → Filter → Synthesis → Citation → 
    - Decorated with `@observe(as_type="span")` for data processing tracing
    - Generates APA-formatted citations for all papers
    - Validates synthesis claims against source papers
-   - Calculates cost estimates (GPT-4o-mini pricing)
+   - Calculates cost estimates from per-model pricing in `config/pricing.json` (loaded via `utils/config.py`), overridable per-deployment with `PRICING_INPUT_PER_1M`/`PRICING_OUTPUT_PER_1M`/etc. in `.env` — falls back to a default rate with a warning if the configured model isn't in the pricing file
    - Creates final `ValidatedOutput` with all metadata
 
 ### Critical Architecture Patterns
@@ -336,7 +336,7 @@ FASTMCP_SERVER_PORT=5555
 ```
 
 **Testing**:
-- FastMCP: `pytest tests/test_fastmcp_arxiv.py -v` (38 tests) — covers search, download, caching, error handling, fallback logic
+- FastMCP: `pytest tests/test_fastmcp_arxiv.py -v` (29 tests) — covers search, download, caching, error handling, fallback logic
 
 ### PDF Processing Edge Cases
 
@@ -378,9 +378,10 @@ with patch('agents.analyzer.AzureOpenAI', return_value=mock_client):
     agent = AnalyzerAgent(rag_retriever=mock_retriever)
 ```
 
-Current test coverage:
-- **AnalyzerAgent** (18 tests): Core analysis workflow and error handling
-- **FastMCPArxiv** (38 tests): FastMCP server, client, integration, error handling, fallback logic
+Current test coverage (counts as of the last audit that ran `pytest --collect-only`; re-run it rather than trusting these numbers indefinitely — this file has drifted from the real collected count before):
+- **AnalyzerAgent** (23 tests, `tests/test_analyzer.py`): Core analysis workflow, error handling, response normalization, and the `USE_RESPONSES_API=true` path (success + fallback-on-error, mocked)
+- **SynthesisAgent** (11 tests, `tests/test_synthesis.py`, NEW post-v2.13): `synthesize()`/`run()` success and error paths, mismatched papers/analyses handling, response normalization, and the `USE_RESPONSES_API=true` path (success + fallback-on-error, mocked) — this module had zero test coverage before, meaning the Responses API structured-output feature (both agents) was previously verified only by a manual live run, not CI
+- **FastMCPArxiv** (29 tests, `tests/test_fastmcp_arxiv.py`): FastMCP server, client, integration, error handling, fallback logic. Mocks patch the module-level `Client` import (`utils.fastmcp_arxiv_client.Client`) as an async context manager, matching the real per-operation `async with Client(self.server_url) as client:` pattern — not a `_get_client()` method, which doesn't exist on this class (removed at some point after v2.3's persistent-client design; the tests weren't updated at the time, which is exactly the kind of drift with zero coverage on the test-suite's own correctness that let it go unnoticed)
 - **TraceReader** (`tests/test_trace_reader.py`, NEW v2.11): Correct v3 `client.api.*` call shapes/kwargs, `usage_details`/`cost_details` extraction preferring non-deprecated fields, graceful disabled-LangFuse behavior — this module had zero test coverage before v2.11, which is exactly how its v2-API breakage went unnoticed
 - **`get_verified_trace_cost`** (`tests/test_analytics.py`, NEW v2.11): Retry/poll semantics (treats a `0.0` cost as "not computed yet" and keeps polling, returns `None` only when the trace itself can't be found, never raises)
 
@@ -583,9 +584,15 @@ See `observability/README.md` for comprehensive documentation.
 - `utils/fastmcp_arxiv_server.py`: FastMCP server with auto-start
 - `utils/semantic_cache.py`: Query caching with embeddings
 
+### Configuration
+- `config/pricing.json`: Per-model input/output/embedding token pricing used by `CitationAgent`'s cost estimates, loaded via `utils/config.py::PricingConfig`. Overridable per-deployment with `PRICING_INPUT_PER_1M`/`PRICING_OUTPUT_PER_1M`/`PRICING_EMBEDDING_PER_1M` in `.env`.
+
 ### Scripts
 - `scripts/validate_langfuse_keys.py`: Standalone CLI — live LangFuse API key validation (`python scripts/validate_langfuse_keys.py`). Run before deploying to catch invalid/missing keys and SDK/host issues before they surface as silent tracing failures.
 - `scripts/validate_responses_api.py` (NEW v2.13): Standalone CLI — live check of whether the configured Azure OpenAI resource/deployment/region supports the Responses API, and at what minimum `AZURE_OPENAI_API_VERSION` (`python scripts/validate_responses_api.py`). Also confirms bumping that env var (shared with `rag/embeddings.py`) doesn't break embeddings or the Chat Completions fallback. Run this before setting `USE_RESPONSES_API=true` — required, not optional, per this codebase's documented history of unverified-API-version incidents.
+- `scripts/validate_azure_embeddings.py`: Standalone CLI — validates the configured Azure OpenAI embedding deployment (checks required env vars, then fires a real embedding request). Referenced from `.env.example` next to `AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME`; run when embeddings start failing or after changing that deployment.
+- `scripts/test_llm_deployment.py`: Standalone CLI — fires a single real chat completion against the configured `AZURE_OPENAI_DEPLOYMENT_NAME`/`AZURE_OPENAI_API_VERSION` and prints the result. Quick sanity check when the main app's LLM calls start failing, without spinning up the full agent pipeline.
+- `scripts/list_azure_deployments.sh` / `scripts/test_api_versions.sh` / `scripts/test_embedding_curl.sh`: Shell scripts for diagnosing Azure OpenAI resource/deployment/API-version mismatches directly via the Azure REST API and `curl` — lower-level than the Python validators above, useful when those themselves can't tell you *why* a call is failing (e.g. deployment name typos, wrong API version per resource/region, auth issues below the SDK layer).
 
 ### Documentation
 - `CLAUDE.md`: This file - comprehensive developer guide

@@ -28,6 +28,22 @@ def mock_fastmcp_client():
     return mock_client
 
 
+def _patched_fastmcp_client(mock_inner_client):
+    """
+    Patch utils.fastmcp_arxiv_client.Client so `async with Client(url) as client`
+    yields mock_inner_client.
+
+    The real FastMCPArxivClient has no persistent connection or _get_client()
+    method -- each operation opens its own `async with Client(self.server_url)`
+    context (see search_papers_async/download_paper_async/get_cached_papers_async).
+    Patching the module-level Client import is what actually intercepts that.
+    """
+    mock_client_cls = MagicMock()
+    mock_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_inner_client)
+    mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+    return patch('utils.fastmcp_arxiv_client.Client', mock_client_cls)
+
+
 @pytest.fixture
 def fastmcp_client(tmp_path):
     """Create FastMCPArxivClient with temporary storage."""
@@ -80,7 +96,7 @@ class TestFastMCPArxivClient:
         assert client.storage_path == tmp_path
         assert client.server_host == "localhost"
         assert client.server_port == 5555
-        assert client.server_url == "http://localhost:5555"
+        assert client.server_url == "http://localhost:5555/sse"
         assert tmp_path.exists()
 
     def test_init_default_path(self):
@@ -176,8 +192,7 @@ class TestFastMCPArxivClient:
             "count": 1
         }
 
-        # Patch _get_client to return mock
-        with patch.object(fastmcp_client, '_get_client', return_value=mock_fastmcp_client):
+        with _patched_fastmcp_client(mock_fastmcp_client):
             papers = await fastmcp_client.search_papers_async(
                 query="machine learning",
                 max_results=5,
@@ -201,7 +216,7 @@ class TestFastMCPArxivClient:
         """Test search with no results."""
         mock_fastmcp_client.call_tool.return_value = {"papers": [], "count": 0}
 
-        with patch.object(fastmcp_client, '_get_client', return_value=mock_fastmcp_client):
+        with _patched_fastmcp_client(mock_fastmcp_client):
             papers = await fastmcp_client.search_papers_async(
                 query="nonexistent topic",
                 max_results=5
@@ -214,7 +229,7 @@ class TestFastMCPArxivClient:
         """Test search with malformed response."""
         mock_fastmcp_client.call_tool.return_value = "unexpected string response"
 
-        with patch.object(fastmcp_client, '_get_client', return_value=mock_fastmcp_client):
+        with _patched_fastmcp_client(mock_fastmcp_client):
             papers = await fastmcp_client.search_papers_async(
                 query="test query",
                 max_results=5
@@ -271,7 +286,7 @@ class TestFastMCPArxivClient:
         pdf_path = tmp_path / f"{sample_paper.arxiv_id}.pdf"
         pdf_path.write_bytes(b"downloaded pdf content")
 
-        with patch.object(fastmcp_client, '_get_client', return_value=mock_fastmcp_client):
+        with _patched_fastmcp_client(mock_fastmcp_client):
             path = await fastmcp_client.download_paper_async(sample_paper)
 
             assert path == pdf_path
@@ -287,7 +302,7 @@ class TestFastMCPArxivClient:
         }
 
         # Mock direct download fallback
-        with patch.object(fastmcp_client, '_get_client', return_value=mock_fastmcp_client), \
+        with _patched_fastmcp_client(mock_fastmcp_client), \
              patch.object(fastmcp_client, '_download_from_arxiv_direct', return_value=Path("fake.pdf")) as mock_fallback:
 
             path = await fastmcp_client.download_paper_async(sample_paper)
@@ -309,7 +324,7 @@ class TestFastMCPArxivClient:
         # Don't create the file
 
         # Mock direct download fallback
-        with patch.object(fastmcp_client, '_get_client', return_value=mock_fastmcp_client), \
+        with _patched_fastmcp_client(mock_fastmcp_client), \
              patch.object(fastmcp_client, '_download_from_arxiv_direct', return_value=Path("fallback.pdf")) as mock_fallback:
 
             path = await fastmcp_client.download_paper_async(sample_paper)
@@ -367,7 +382,7 @@ class TestFastMCPArxivClient:
             "count": 2
         }
 
-        with patch.object(fastmcp_client, '_get_client', return_value=mock_fastmcp_client):
+        with _patched_fastmcp_client(mock_fastmcp_client):
             paths = await fastmcp_client.get_cached_papers_async()
 
             assert len(paths) == 2
@@ -385,7 +400,7 @@ class TestFastMCPArxivClient:
         mock_client = AsyncMock()
         mock_client.call_tool.side_effect = Exception("Connection error")
 
-        with patch.object(fastmcp_client, '_get_client', return_value=mock_client):
+        with _patched_fastmcp_client(mock_client):
             paths = await fastmcp_client.get_cached_papers_async()
 
             # Should fall back to filesystem listing
@@ -430,16 +445,23 @@ class TestFastMCPArxivClient:
             assert path is None
 
     @pytest.mark.asyncio
-    async def test_close_async(self, fastmcp_client, mock_fastmcp_client):
-        """Test async client cleanup."""
-        fastmcp_client._client = mock_fastmcp_client
-        fastmcp_client._client_initialized = True
+    async def test_close_async(self, fastmcp_client):
+        """
+        Test async client cleanup is a safe no-op.
 
+        The client no longer holds a persistent connection or _client/
+        _client_initialized attributes -- each operation opens its own
+        `async with Client(...)` context (see _patched_fastmcp_client's
+        docstring above), so there's nothing for close_async() to tear
+        down. It should simply complete without raising.
+        """
         await fastmcp_client.close_async()
+        assert not hasattr(fastmcp_client, "_client")
+        assert not hasattr(fastmcp_client, "_client_initialized")
 
-        mock_fastmcp_client.close.assert_called_once()
-        assert fastmcp_client._client is None
-        assert not fastmcp_client._client_initialized
+    def test_close_sync(self, fastmcp_client):
+        """Test sync close() wrapper is also a safe no-op."""
+        fastmcp_client.close()
 
 
 class TestArxivFastMCPServer:
