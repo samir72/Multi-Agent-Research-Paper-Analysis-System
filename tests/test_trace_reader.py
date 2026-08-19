@@ -165,12 +165,34 @@ class TestFilterByAgent:
         from_date = datetime.now(timezone.utc)
         spans = reader.filter_by_agent("analyzer_agent", limit=25, from_timestamp=from_date)
 
-        # observations.get_many's real kwarg is from_start_time, not from_timestamp
+        # observations.get_many's real kwarg is from_start_time, not from_timestamp.
+        # request_options widens the SDK's default timeout -- an unscoped query by a
+        # high-volume agent name can otherwise time out against real usage history.
         mock_client.api.observations.get_many.assert_called_once_with(
+            request_options={"timeout_in_seconds": 30},
             limit=25, name="analyzer_agent", type="SPAN", from_start_time=from_date
         )
         assert len(spans) == 1
         assert spans[0].name == "analyzer_agent"
+
+    def test_trace_id_scopes_the_query(self):
+        # trace_id narrows the server-side query, which is what actually fixes the
+        # timeout in practice -- verified live, see CLAUDE.md's Trace Querying section.
+        mock_client = Mock(spec=["api"])
+        mock_client.api = Mock(spec=["observations"])
+        mock_client.api.observations = Mock(spec=["get_many"])
+        mock_client.api.observations.get_many.return_value = Mock(
+            data=[_make_observation(obs_type="SPAN", name="analyzer_agent")]
+        )
+
+        reader = _reader_with_mock_client(mock_client)
+        spans = reader.filter_by_agent("analyzer_agent", trace_id="trace-123")
+
+        mock_client.api.observations.get_many.assert_called_once_with(
+            request_options={"timeout_in_seconds": 30},
+            limit=50, name="analyzer_agent", type="SPAN", trace_id="trace-123"
+        )
+        assert len(spans) == 1
 
 
 class TestGetGenerations:

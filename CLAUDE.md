@@ -136,9 +136,13 @@ workflow_app = create_workflow_graph(
     citation_agent=self.citation_agent
 )
 
-# Run workflow with checkpointing
-config = {"configurable": {"thread_id": session_id}}
-final_state = run_workflow(workflow_app, initial_state, config, progress)
+# Run workflow with checkpointing (run_workflow builds the config dict internally)
+final_state = run_workflow(
+    app=workflow_app,
+    initial_state=initial_state,
+    thread_id=session_id,
+    use_streaming=False,
+)
 ```
 
 **State Serialization**:
@@ -419,6 +423,8 @@ The system automatically traces all agent executions and LLM calls when LangFuse
 
 **IMPORTANT (fixed in v2.11)**: `TraceReader`'s query methods call the LangFuse v3 SDK's REST query client at `client.api.*` (`client.api.trace.get/list`, `client.api.observations.get_many`). Earlier versions of this file called `client.get_traces()`/`client.get_trace()`/`client.get_observations()` — none of which exist on the v3 `Langfuse` class (that's v2-only API) — so every method silently returned `[]`/`None` via a broad `except Exception`, with no test coverage to catch it. If you see `AttributeError` or 404s (`LangfuseNotFoundError`) coming from this module, the first thing to check is whether the SDK's query surface changed again, not whether the trace itself is missing — cross-check against `dir(Langfuse().api.trace)` / `dir(Langfuse().api.observations)` in the installed SDK version. Cost/usage extraction prefers the non-deprecated `usage_details`/`cost_details` fields on observations over the deprecated `calculated_total_cost`/`usage` fields (both are read, newer preferred, for compatibility with older data).
 
+**IMPORTANT (fixed post-v2.13)**: `filter_by_agent()` had no `trace_id` parameter and no explicit request timeout, unlike `get_generations()` (which already accepted `trace_id` to scope its query). Verified live against this project's real usage history: an unscoped `filter_by_agent(agent_name="analyzer_agent")` / `"retriever_agent"` (the two highest-volume span names) reliably timed out on the SDK's default request timeout (~5s, reproduced twice), while low-volume names (`"synthesis_agent"`, `"citation_agent"`) succeeded in 3-4s — so this wasn't a systemic outage, just an unscoped scan over too much history. Fixed by (1) adding an optional `trace_id` param that scopes the query server-side (verified live: 0.6s vs. timing out), and (2) passing `request_options={"timeout_in_seconds": 30}` so an unscoped query — still sometimes necessary, e.g. "what has this agent done recently" — has room to complete instead of failing outright (verified live: 2.7-3.8s). Always pass `trace_id` when you already have it (e.g. right after a workflow run, as `verify-trace` does); treat the unscoped mode as a slow, best-effort query, not something to poll routinely.
+
 ```python
 from observability import TraceReader
 
@@ -433,10 +439,10 @@ traces = reader.get_traces(user_id="user-123", session_id="session-abc")
 # Filter by date range
 from datetime import datetime, timedelta
 start = datetime.now() - timedelta(days=7)
-traces = reader.filter_by_date_range(traces, start_date=start)
+traces = reader.filter_by_date_range(from_date=start, to_date=datetime.now())
 
-# Get specific agent executions
-analyzer_spans = reader.filter_by_agent(traces, agent_name="analyzer_agent")
+# Get specific agent executions, scoped to one trace (recommended -- see below)
+analyzer_spans = reader.filter_by_agent(agent_name="analyzer_agent", trace_id=some_trace_id)
 
 # Export traces
 reader.export_traces_to_json(traces, "traces.json")

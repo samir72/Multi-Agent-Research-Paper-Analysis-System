@@ -42,8 +42,9 @@ traces = reader.get_traces(limit=10)
 # Get traces for a specific session
 session_traces = reader.get_traces(session_id="session-abc123")
 
-# Filter by agent
-retriever_spans = reader.filter_by_agent("retriever_agent", limit=50)
+# Filter by agent -- pass trace_id when you have it to scope the query server-side;
+# unscoped queries on high-volume agent names can be slow against real usage history
+retriever_spans = reader.filter_by_agent("retriever_agent", trace_id="trace-xyz", limit=50)
 
 # Get specific trace
 trace = reader.get_trace_by_id("trace-xyz")

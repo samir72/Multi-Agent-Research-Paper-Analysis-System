@@ -195,6 +195,7 @@ class TraceReader:
         agent_name: str,
         limit: int = 50,
         from_timestamp: Optional[datetime] = None,
+        trace_id: Optional[str] = None,
     ) -> List[SpanInfo]:
         """
         Filter traces by agent name.
@@ -203,6 +204,16 @@ class TraceReader:
             agent_name: Name of the agent (e.g., "retriever_agent", "analyzer_agent")
             limit: Maximum number of results
             from_timestamp: Filter traces after this timestamp
+            trace_id: Optional trace ID to scope the query to a single trace.
+                Strongly recommended when known -- without it, LangFuse scans
+                by name across the *entire* project's history. Verified live:
+                on this project's real usage history, unscoped queries for the
+                two highest-volume span names ("analyzer_agent", "retriever_agent")
+                reliably time out (~5s, reproduced twice) while low-volume names
+                ("synthesis_agent", "citation_agent") return in 3-4s -- so add
+                trace_id whenever the caller already has it (e.g. right after a
+                workflow run), and treat the unscoped mode as a slow, best-effort
+                "recent activity" query, not something to poll routinely.
 
         Returns:
             List of SpanInfo objects for the specified agent
@@ -219,8 +230,18 @@ class TraceReader:
             params = {"limit": limit, "name": agent_name, "type": "SPAN"}
             if from_timestamp:
                 params["from_start_time"] = from_timestamp
+            if trace_id:
+                params["trace_id"] = trace_id
 
-            observations = self.client.api.observations.get_many(**params)
+            # Widen past the SDK's default request timeout: verified live that
+            # the default is too short for an unscoped scan over a high-volume
+            # agent name in a project with real usage history (see trace_id
+            # docstring above) -- 30s comfortably covers that case without
+            # masking a genuinely dead connection.
+            observations = self.client.api.observations.get_many(
+                request_options={"timeout_in_seconds": 30},
+                **params,
+            )
 
             spans = []
             for obs in observations.data:
