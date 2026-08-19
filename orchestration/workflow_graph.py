@@ -14,7 +14,7 @@ from utils.langfuse_client import workflow_trace
 from utils.trace_context import set_current_trace_id, reset_current_trace_id
 from orchestration.nodes import (
     retriever_node,
-    analyzer_node,
+    analyzer_paper_node,
     filter_node,
     synthesis_node,
     citation_node,
@@ -27,6 +27,13 @@ logger = logging.getLogger(__name__)
 
 # Enable nested event loops for Gradio compatibility
 nest_asyncio.apply()
+
+# Preserves the old AnalyzerAgent.run()'s hard cap of 4 concurrent papers
+# (min(4, len(papers))) now that parallelism is driven by LangGraph's own
+# Send-dispatched thread pool instead of a manual ThreadPoolExecutor -- without
+# this, the executor's default sizing (min(32, os.cpu_count()+4)) applies,
+# a real and easy-to-miss increase in concurrent LLM calls.
+ANALYZER_MAX_CONCURRENCY = 4
 
 
 def create_workflow_graph(
@@ -60,14 +67,17 @@ def create_workflow_graph(
         lambda state: retriever_node(state, retriever_agent)
     )
 
+    # "analyzer" is fanned out via Send (see should_continue_after_retriever
+    # below) -- one invocation per paper, each receiving just {"paper": p}
+    # rather than the full AgentState.
     workflow.add_node(
         "analyzer",
-        lambda state: analyzer_node(state, analyzer_agent)
+        lambda send_arg: analyzer_paper_node(send_arg, analyzer_agent)
     )
 
     workflow.add_node(
         "filter",
-        filter_node
+        lambda state: filter_node(state, analyzer_agent)
     )
 
     workflow.add_node(
@@ -88,12 +98,14 @@ def create_workflow_graph(
     # Set entry point
     workflow.set_entry_point("retriever")
 
-    # Add conditional edge after retriever
+    # Add conditional edge after retriever: fans out to one "analyzer"
+    # invocation per paper via Send when papers exist (Send objects carry
+    # their own target node name, bypassing this mapping), or routes to END
+    # via the "end" string when none were found.
     workflow.add_conditional_edges(
         "retriever",
-        should_continue_after_retriever,
+        lambda state: should_continue_after_retriever(state, analyzer_agent),
         {
-            "continue": "analyzer",
             "end": END,
         }
     )
@@ -144,7 +156,10 @@ async def run_workflow_async(
     Yields:
         State updates after each node execution
     """
-    config = {"configurable": {"thread_id": thread_id or "default"}}
+    config = {
+        "configurable": {"thread_id": thread_id or "default"},
+        "max_concurrency": ANALYZER_MAX_CONCURRENCY,
+    }
 
     logger.info(f"Starting async workflow execution (thread_id: {thread_id})")
 
@@ -217,7 +232,10 @@ def run_workflow(
     Returns:
         Final state (if use_streaming=False) or generator of states (if use_streaming=True)
     """
-    config = {"configurable": {"thread_id": thread_id or "default"}}
+    config = {
+        "configurable": {"thread_id": thread_id or "default"},
+        "max_concurrency": ANALYZER_MAX_CONCURRENCY,
+    }
 
     logger.info(f"Starting workflow execution (thread_id: {thread_id}, streaming: {use_streaming})")
 

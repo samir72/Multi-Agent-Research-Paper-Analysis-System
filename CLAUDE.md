@@ -26,11 +26,14 @@ User Query → Retriever → Analyzer → Filter → Synthesis → Citation → 
 - `num_papers`: Number of papers to analyze
 - `papers`: List of Paper objects (populated by Retriever)
 - `chunks`: List of PaperChunk objects (populated by Retriever)
-- `analyses`: List of Analysis objects (populated by Analyzer)
+- `analyses`: List of Analysis objects (populated by Analyzer). **Reducer field** (`Annotated[List[Analysis], operator.add]`, v2.13+) — the analyzer node is fanned out in parallel via LangGraph's `Send` API (one node invocation per paper), and concurrent branches writing to the same key need a reducer to merge correctly instead of the default last-write-wins behavior, which would silently drop all but one branch's contribution.
 - `synthesis`: SynthesisResult object (populated by Synthesis)
 - `validated_output`: ValidatedOutput object (populated by Citation)
-- `errors`: List of error messages accumulated across agents
-- `token_usage`: Dict tracking input/output/embedding tokens
+- `errors`: List of error messages accumulated across agents. **Reducer field** (`Annotated[List[str], operator.add]`, v2.13+) — same reason as `analyses`: per-paper analyzer branches may each report their own failure concurrently.
+- `token_usage`: Dict tracking input/output/embedding tokens. **Reducer field** (`Annotated[Dict[str, int], merge_token_usage]`, v2.13+) — plain dicts aren't addable via `operator.add`, so `merge_token_usage()` (`utils/langgraph_state.py`) sums matching keys across partial updates.
+- `processing_time`: Total workflow duration in seconds, set by `finalize_node` (declared explicitly in the schema as of v2.13; previously set via a runtime-only key not declared in the TypedDict)
+
+**IMPORTANT (v2.13+)**: Because `analyses`/`errors`/`token_usage` now carry reducers, **every node in `orchestration/nodes.py` returns a partial delta dict (only the keys it actually changed), never the whole mutated state object.** A reducer re-applies on *every* node return that includes that key, not just fanned-out `Send` branches — returning the full state (which already carries the accumulated value) would re-merge and duplicate it on every subsequent node. This was confirmed as a real bug via a minimal reproduction before the refactor (a 3-item list became 12 after three sequential full-state-returning node passes). The underlying agents (`RetrieverAgent.run()`, `SynthesisAgent.run()`, `CitationAgent.run()`) still keep their original `run(state) -> state` contract unchanged — the node *wrapper* functions in `orchestration/nodes.py` are what diff the agent's full-state output down to a delta before returning it to LangGraph. Any new node added to this graph must follow the same partial-update pattern, not the old "mutate state in place and return it" one.
 - `trace_id`: LangFuse trace identifier (for observability). Set on `initial_state` *before* `app.invoke()` runs (`orchestration/workflow_graph.py::run_workflow()`), so it is present in `state` for every node from `retriever` through `finalize` — not just stamped on afterward. Pre-generated deterministically via `Langfuse.create_trace_id(seed=session_id)` and forced onto the root span via `trace_context` (see `utils/langfuse_client.py::workflow_trace()`).
 - `session_id`: User session tracking (Gradio per-query id, generated in `app.py`)
 - `user_id`: Optional user identifier — populated from the Gradio request's `session_hash` (`request.session_hash` in `app.py`'s handler), giving an anonymous-but-stable per-browser-tab id since the app has no auth
@@ -50,13 +53,15 @@ User Query → Retriever → Analyzer → Filter → Synthesis → Citation → 
    - **FastMCP Support**: Auto-start FastMCP server for standardized arXiv access
 
 2. **AnalyzerAgent** (`agents/analyzer.py`):
-   - Decorated with `@observe(as_type="generation")` for LLM call tracing
+   - `analyze_paper(paper)` is the per-paper unit of work — decorated indirectly via `@observe(name="analyzer_agent", as_type="span")` on `orchestration/nodes.py::analyzer_paper_node()`, which is what the graph actually calls (see "Analyzer parallelism" below)
    - Analyzes each paper individually using RAG
    - Uses 4 broad queries per paper: methodology, results, conclusions, limitations
    - Deduplicates chunks by chunk_id
-   - Calls Azure OpenAI with **temperature=0** and JSON mode
+   - Calls Azure OpenAI with **temperature=0**; JSON mode via Chat Completions by default, or strict `json_schema` structured output via the Responses API when `USE_RESPONSES_API=true` (see "Azure OpenAI Integration" below) — falls back to Chat Completions per-call on any Responses API error
    - RAG retrieval automatically traced via `@observe` on `RAGRetriever.retrieve()`
    - Returns structured `Analysis` objects with confidence scores
+   - Has its own circuit breaker (`consecutive_failures`/`max_consecutive_failures=2`) — after 2 consecutive failures, further calls raise immediately instead of hitting the API again; reset at the start of each new batch by `orchestration/nodes.py::should_continue_after_retriever()`
+   - `AnalyzerAgent.run()` (the older whole-batch `ThreadPoolExecutor` method) still exists and is still directly unit-tested (`tests/test_analyzer.py`), but as of v2.13 is **no longer wired into the LangGraph workflow** — the graph fans out via `Send` instead (see below)
 
 3. **SynthesisAgent** (`agents/synthesis.py`):
    - Decorated with `@observe(as_type="generation")` for LLM call tracing
@@ -108,16 +113,18 @@ Source: {arxiv_url}
 - `run_workflow_async()`: Async streaming execution
 - `get_workflow_state()`: Retrieve current state by thread ID
 
-**Node Wrappers** (`orchestration/nodes.py`):
+**Node Wrappers** (`orchestration/nodes.py`) — as of v2.13, every node wrapper returns a **partial state delta** (only the keys it changed), not the whole state object; see the "IMPORTANT (v2.13+)" note under State Dictionary above for why:
 - `retriever_node()`: Executes RetrieverAgent with LangFuse tracing
-- `analyzer_node()`: Executes AnalyzerAgent with LangFuse tracing
-- `filter_node()`: Filters out low-confidence analyses (confidence_score < 0.7)
+- `analyzer_paper_node()`: Executes `AnalyzerAgent.analyze_paper()` for **one paper**, with LangFuse tracing. Invoked once per paper via `Send` (see "Analyzer parallelism" below) — replaces the pre-v2.13 `analyzer_node()`, which wrapped the whole-batch `AnalyzerAgent.run()`
+- `filter_node()`: Filters out low-confidence analyses (confidence_score < 0.7). Runs exactly once, after all of the analyzer's `Send`-fanned branches complete and merge (LangGraph's Pregel superstep/barrier semantics guarantee this). Also the single point where `AnalyzerAgent.batch_tokens` (accumulated across all per-paper branches under its existing lock) is read back into `state["token_usage"]`, since this node is guaranteed to run after every branch is done
 - `synthesis_node()`: Executes SynthesisAgent with LangFuse tracing
 - `citation_node()`: Executes CitationAgent with LangFuse tracing
 
 **Conditional Routing**:
-- `should_continue_after_retriever()`: Returns "END" if no papers found, else "analyzer"
-- `should_continue_after_filter()`: Returns "END" if all analyses filtered out, else "synthesis"
+- `should_continue_after_retriever(state, analyzer_agent)`: Returns `"end"` if no papers found, otherwise fans out via LangGraph's `Send` API — returns `[Send("analyzer", {"paper": p}) for p in papers]`, one node invocation per paper (v2.13+; previously returned the string `"continue"` to route to a single whole-batch `analyzer` node). Also resets `analyzer_agent.consecutive_failures`/`batch_tokens` at this point, marking the start of a new analyzer batch (the pre-v2.13 `AnalyzerAgent.run()` used to do this reset itself)
+- `should_continue_after_filter()`: Returns "END" if all analyses filtered out, else "synthesis" (unchanged)
+
+**Analyzer parallelism (v2.13+)**: parallel per-paper analysis is now driven by LangGraph's native `Send` API instead of a manual `ThreadPoolExecutor` inside `AnalyzerAgent.run()`. `Send`-dispatched branches get real OS-thread concurrency even under this app's synchronous `app.invoke()` call — LangGraph's sync execution loop (`SyncPregelLoop`) runs them on its own context-propagating thread pool (`ContextThreadPoolExecutor`), so the `contextvars.copy_context()` wrapping the old manual `ThreadPoolExecutor` needed (to keep LangFuse/OTEL spans correctly nested — threads don't inherit contextvars automatically) is no longer required for this path; LangGraph's own executor handles it. The old cap of `min(4, len(papers))` concurrent papers is preserved via `"max_concurrency": ANALYZER_MAX_CONCURRENCY` (= 4) in the `config` dict passed to `app.invoke()`/`app.astream()` in `orchestration/workflow_graph.py` — **this must stay explicit**: omitting it silently raises the ceiling to the executor's default (`min(32, os.cpu_count()+4)`), a real increase in concurrent LLM calls with no error to flag it. See `tests/test_orchestration.py` for reducer-correctness, barrier-semantics, partial-failure, and circuit-breaker regression tests covering this path — `orchestration/` had zero test coverage before v2.13.
 
 **Workflow Execution Flow**:
 ```python
@@ -212,7 +219,7 @@ rm -rf data/cache/
 
 ### Azure OpenAI Integration
 
-All agents use **temperature=0** and **response_format={"type": "json_object"}** for deterministic, structured outputs. Initialize clients like:
+All agents use **temperature=0** for deterministic outputs. Initialize clients like:
 
 ```python
 from openai import AzureOpenAI
@@ -222,6 +229,12 @@ client = AzureOpenAI(
     azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
 )
 ```
+
+**Two structured-output paths (v2.13+)**, both in `agents/analyzer.py` and `agents/synthesis.py`:
+- **Default** (`USE_RESPONSES_API=false`): Chat Completions, `response_format={"type": "json_object"}` (loose JSON mode — guarantees parseable JSON, not field shape).
+- **Opt-in** (`USE_RESPONSES_API=true`): `client.responses.create(...)` (Azure OpenAI Responses API) with `text={"format": {"type": "json_schema", "name": ..., "schema": ANALYSIS_JSON_SCHEMA / SYNTHESIS_JSON_SCHEMA, "strict": true}}` — enforces field shape (required keys, types, no nested-array surprises) at generation time via constrained decoding. Falls back to the Chat Completions path per-call on any Responses API error (never a hard failure). ⚠️ Before enabling in a new environment: run `python scripts/validate_responses_api.py`, which confirms the target Azure OpenAI resource/deployment/region actually exposes the Responses API and finds the minimum `AZURE_OPENAI_API_VERSION` it requires (verified live: on one real resource, `2024-02-01`/`2024-05-01-preview` 404'd — Azure's own error message names the exact cutoff, `"Azure OpenAI Responses API is enabled only for api-version 2025-03-01-preview and later"` — do not assume this version stays current or applies to every resource/region, re-run the script instead). The script also confirms bumping `AZURE_OPENAI_API_VERSION` doesn't break `rag/embeddings.py` (reads the same env var) or the Chat Completions fallback path.
+- In both paths, `_normalize_analysis_response()`/`_normalize_synthesis_response()` (defensive JSON-shape cleanup) and the Pydantic `field_validator`s in `utils/schemas.py` still run — strict-mode schema enforcement reduces how often they fire, it doesn't replace them, since a schema-conformant-but-semantically-degenerate response is still possible and a run can still fail outright (timeout, service error).
+- Token usage field names differ by path and are normalized before being written to `state["token_usage"]`: Chat Completions' `response.usage.prompt_tokens`/`.completion_tokens` vs. Responses API's `response.usage.input_tokens`/`.output_tokens`.
 
 ### Pydantic Schemas (`utils/schemas.py` and `utils/langgraph_state.py`)
 
@@ -400,7 +413,7 @@ The system automatically traces all agent executions and LLM calls when LangFuse
 - LLM calls automatically captured (prompt, completion, tokens, cost)
 - RAG operations traced (embeddings, vector search)
 - Workflow state transitions logged
-- **Thread-pool gotcha**: `contextvars` (which OTEL/LangFuse tracing relies on) are not propagated into new threads automatically. `AnalyzerAgent`'s `ThreadPoolExecutor` explicitly runs each submitted task inside `contextvars.copy_context()` for this reason — any new parallelized code path must do the same or its spans will be orphaned (see "Adding a new agent" below).
+- **Thread-pool gotcha**: `contextvars` (which OTEL/LangFuse tracing relies on) are not propagated into new threads automatically. A manually-created `ThreadPoolExecutor` (e.g. `AnalyzerAgent.run()`, the pre-v2.13 batch method — still present and tested, but no longer wired into the graph) must explicitly run each submitted task inside `contextvars.copy_context()` for this reason, or its spans become orphaned top-level traces. The graph's actual analyzer parallelism as of v2.13 goes through LangGraph's `Send` API instead, which uses its own context-propagating thread pool and does not need this manual wrapping — see "Analyzer parallelism" under LangGraph Orchestration and "Adding a new agent" below.
 
 ### Trace Querying (`observability/trace_reader.py`)
 
@@ -486,10 +499,10 @@ See `observability/README.md` for comprehensive documentation.
 **Adding a new agent**:
 1. Create agent class with `run(state) -> state` method
 2. Decorate `run()` with `@observe` for tracing
-3. Add node wrapper in `orchestration/nodes.py`
+3. Add node wrapper in `orchestration/nodes.py` — **return only a partial delta dict (the keys this node actually changed), not the whole state object** (v2.13+ convention; see the "IMPORTANT" note under State Dictionary — required because `analyses`/`errors`/`token_usage` carry reducers, and returning the full state re-triggers and duplicates them). If the agent's own `run()` still returns the whole state, diff it in the node wrapper the way `retriever_node()`/`synthesis_node()`/`citation_node()` do (`_errors_delta()`/`_token_usage_delta()` helpers), rather than changing the agent's own contract.
 4. Add node to workflow graph in `orchestration/workflow_graph.py`
 5. Update conditional routing if needed
-6. **If the agent parallelizes work with `ThreadPoolExecutor`** (see `AnalyzerAgent`), propagate tracing context into worker threads explicitly — `contextvars` (which LangFuse's OTEL-based tracing relies on) are not inherited by new threads automatically. Wrap submitted callables: `executor.submit(contextvars.copy_context().run, fn, *args)`. Without this, spans created inside worker threads become disconnected top-level traces instead of nesting under the current run.
+6. **If the node needs to fan out in parallel over a list** (e.g. one LLM call per item), prefer LangGraph's native `Send` API over a manual `ThreadPoolExecutor` — see `should_continue_after_retriever()`/`analyzer_paper_node()` for the reference pattern (v2.13+). `Send`-dispatched branches get real concurrency even under this app's synchronous `app.invoke()`, via LangGraph's own context-propagating thread pool — no manual `contextvars.copy_context()` wrapping needed the way the old `AnalyzerAgent.run()`'s `ThreadPoolExecutor` required. Any field multiple `Send` branches write to needs a reducer in `AgentState` (`utils/langgraph_state.py`) — a missing one silently collapses fanned-out results to a single branch's contribution instead of raising, so add a regression test asserting the merged count (see `tests/test_orchestration.py::TestSendFanOutReducerCorrectness`). If hand-rolling a `ThreadPoolExecutor` inside an agent's own method instead (not graph-level fan-out), the manual `contextvars.copy_context()` wrapping is still required — `contextvars` are not inherited by new threads automatically.
 
 **Modifying chunking**:
 - Adjust `chunk_size` and `chunk_overlap` in PDFProcessor initialization
@@ -566,6 +579,7 @@ See `observability/README.md` for comprehensive documentation.
 
 ### Scripts
 - `scripts/validate_langfuse_keys.py`: Standalone CLI — live LangFuse API key validation (`python scripts/validate_langfuse_keys.py`). Run before deploying to catch invalid/missing keys and SDK/host issues before they surface as silent tracing failures.
+- `scripts/validate_responses_api.py` (NEW v2.13): Standalone CLI — live check of whether the configured Azure OpenAI resource/deployment/region supports the Responses API, and at what minimum `AZURE_OPENAI_API_VERSION` (`python scripts/validate_responses_api.py`). Also confirms bumping that env var (shared with `rag/embeddings.py`) doesn't break embeddings or the Chat Completions fallback. Run this before setting `USE_RESPONSES_API=true` — required, not optional, per this codebase's documented history of unverified-API-version incidents.
 
 ### Documentation
 - `CLAUDE.md`: This file - comprehensive developer guide
@@ -575,6 +589,25 @@ See `observability/README.md` for comprehensive documentation.
 - `.env.example`: Environment variable template with all options
 
 ## Version History and Recent Changes
+
+### Version 2.13: Azure OpenAI Responses API + LangGraph `Send`-based Analyzer Parallelism
+
+**Context**: Evaluated migrating from direct Azure OpenAI calls to Microsoft Foundry Agent Service; rejected because its only real differentiator (Connected Agents multi-agent orchestration) requires handing step-sequencing to an LLM's runtime judgment, incompatible with this pipeline's deterministic routing (`should_continue_after_retriever`/`should_continue_after_filter` must stay pure, testable functions). Its other pitched benefits (structured output, evaluators, content safety) were reachable more cheaply without adopting the platform. This release implements the resulting leaner strategy instead: LangGraph remains the sole orchestrator, unchanged in shape.
+
+**Added:**
+- **Azure OpenAI Responses API path** (`USE_RESPONSES_API=true`, default `false`) in `agents/analyzer.py`/`agents/synthesis.py` — `client.responses.create(...)` with `text={"format": {"type": "json_schema", ..., "strict": true}}` for schema-enforced structured output, replacing loose `response_format={"type": "json_object"}` JSON mode. Falls back to Chat Completions per-call on any Responses API error. Same `openai` SDK, same client construction, no new Azure resource or auth model — see "Azure OpenAI Integration" above for details. `_normalize_analysis_response()`/`_normalize_synthesis_response()` and the Pydantic `field_validator`s are kept regardless of path (defense-in-depth, not replaced by schema enforcement).
+- **`Send`-based analyzer parallelism** — the analyzer's manual `ThreadPoolExecutor` (previously in `AnalyzerAgent.run()`) is replaced by LangGraph's native `Send` API: `should_continue_after_retriever()` now fans out to one `analyzer` node invocation per paper (`orchestration/nodes.py::analyzer_paper_node()`) instead of routing to a single whole-batch node. Confirmed from the installed `langgraph` source (not assumed) that `Send`-dispatched branches get real OS-thread concurrency even under this app's synchronous `app.invoke()`, via LangGraph's own context-propagating thread pool — the manual `contextvars.copy_context()` wrapping the old `ThreadPoolExecutor` needed is no longer required for this path. The old hard cap of 4 concurrent papers is preserved explicitly via `"max_concurrency": ANALYZER_MAX_CONCURRENCY` in the invoke `config` (`orchestration/workflow_graph.py`) — omitting this would silently raise the ceiling to the executor's default (`min(32, os.cpu_count()+4)`).
+- `AgentState.analyses`/`errors`/`token_usage` (`utils/langgraph_state.py`) now use LangGraph reducers (`operator.add` / a new `merge_token_usage()`) to support the fan-out — concurrent `Send` branches writing to the same key need a reducer to merge correctly; without one, LangGraph's default last-write-wins would silently collapse N fanned-out results down to 1.
+- `tests/test_orchestration.py` (new, 8 tests) — `orchestration/` had zero test coverage before this release. Covers reducer correctness (fan-out produces N merged analyses, not 1), Pregel barrier semantics (downstream nodes run exactly once, not once per branch), partial-failure isolation, `max_concurrency` config presence, and circuit-breaker behavior under the new per-paper dispatch.
+
+**Fixed (uncovered while implementing the above, not pre-existing incidents):**
+- **Every node in `orchestration/nodes.py` returned the whole mutated state object instead of a partial delta.** This was harmless before any reducer existed (a plain field's "last write" is just the current, always-correct value), but became a real bug the moment `analyses`/`errors`/`token_usage` got reducers: a reducer re-applies on *every* node return that includes that key, so returning the full state (which already carries the already-accumulated value) re-merges and duplicates it on every subsequent node. Reproduced directly against the installed LangGraph version before fixing: a 3-item reducer-tracked list became 12 after three sequential full-state-returning node passes (3 → 6 → 12, doubling each time). Fixed by having every node wrapper return only the keys it actually changed; the underlying agents' `run(state) -> state` contracts are unchanged, the node *wrapper* functions now diff the agent's output down to a delta (`_errors_delta()`/`_token_usage_delta()` helpers in `orchestration/nodes.py`).
+- `finalize_node`'s `processing_time` key was set at runtime but never declared in the `AgentState` TypedDict schema — added explicitly as part of this refactor to remove ambiguity now that node returns are partial dicts rather than the same mutated object throughout.
+
+**Changed:**
+- `requirements.txt`: `langgraph>=0.2.0` (unbounded floor, far below the installed `1.0.3`) tightened to `langgraph>=1.0.0,<2.0.0` — `Send`'s import path already moved once between major versions (`langgraph.constants` → `langgraph.types`), the same unbounded-floor pattern this codebase has been burned by twice before (LangFuse, `arxiv`). `openai>=1.0.0` raised to `openai>=1.66.0`, the minimum version exposing `client.responses.create()`.
+
+**Lesson reinforced**: adding a LangGraph reducer to a field isn't just a schema annotation — it changes the contract every node touching that field must follow (partial deltas, not full-state returns), and this codebase's existing nodes all predated any reducer, so the incompatibility was silent until reproduced deliberately. When introducing `Send`-based fan-out (or any reducer) into an existing graph, audit every node that touches the reducer-tracked field, not just the new fanned-out one.
 
 ### Version 2.11: Fix Broken Observability Read API + Real LangFuse Cost Pull
 

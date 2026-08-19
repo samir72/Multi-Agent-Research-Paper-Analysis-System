@@ -17,6 +17,55 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Strict JSON schema for Responses API structured output (USE_RESPONSES_API=true).
+# Enforces field shape at generation time -- reduces, but does not replace,
+# the need for _normalize_synthesis_response() below.
+_CONSENSUS_POINT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "statement": {"type": "string"},
+        "supporting_papers": {"type": "array", "items": {"type": "string"}},
+        "citations": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "number"},
+    },
+    "required": ["statement", "supporting_papers", "citations", "confidence"],
+    "additionalProperties": False,
+}
+
+_CONTRADICTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "topic": {"type": "string"},
+        "viewpoint_a": {"type": "string"},
+        "papers_a": {"type": "array", "items": {"type": "string"}},
+        "viewpoint_b": {"type": "string"},
+        "papers_b": {"type": "array", "items": {"type": "string"}},
+        "citations": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "number"},
+    },
+    "required": [
+        "topic", "viewpoint_a", "papers_a", "viewpoint_b",
+        "papers_b", "citations", "confidence"
+    ],
+    "additionalProperties": False,
+}
+
+SYNTHESIS_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "consensus_points": {"type": "array", "items": _CONSENSUS_POINT_SCHEMA},
+        "contradictions": {"type": "array", "items": _CONTRADICTION_SCHEMA},
+        "research_gaps": {"type": "array", "items": {"type": "string"}},
+        "summary": {"type": "string"},
+        "confidence_score": {"type": "number"},
+    },
+    "required": [
+        "consensus_points", "contradictions", "research_gaps",
+        "summary", "confidence_score"
+    ],
+    "additionalProperties": False,
+}
+
 
 class SynthesisAgent:
     """Agent for synthesizing findings across multiple papers."""
@@ -41,6 +90,11 @@ class SynthesisAgent:
         self.model = model
         self.temperature = temperature
         self.timeout = timeout
+
+        # Feature flag: use Azure OpenAI Responses API (structured JSON-schema
+        # output) instead of Chat Completions. Falls back to Chat Completions
+        # per-call on any Responses API error -- see synthesize().
+        self.use_responses_api = os.getenv("USE_RESPONSES_API", "false").lower() == "true"
 
         # Initialize Azure OpenAI client with timeout
         self.client = AzureOpenAI(
@@ -220,28 +274,65 @@ CRITICAL JSON FORMATTING RULES:
             # Create synthesis prompt
             prompt = self._create_synthesis_prompt(papers, analyses, query)
 
-            # Call Azure OpenAI with temperature=0 and output limits
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "You are a research synthesis expert. Provide accurate, grounded synthesis based only on the provided analyses."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=self.temperature,
-                max_tokens=2500,  # Larger limit for multi-paper synthesis
-                response_format={"type": "json_object"}
-            )
+            # Call Azure OpenAI with temperature=0 and output limits.
+            # Responses API path (USE_RESPONSES_API=true) falls back to Chat
+            # Completions on any error -- same degrade-gracefully contract as before.
+            system_content = "You are a research synthesis expert. Provide accurate, grounded synthesis based only on the provided analyses."
+            content = None
+            prompt_tokens = 0
+            completion_tokens = 0
+
+            if self.use_responses_api:
+                try:
+                    resp_api_response = self.client.responses.create(
+                        model=self.model,
+                        instructions=system_content,
+                        input=prompt,
+                        temperature=self.temperature,
+                        max_output_tokens=2500,
+                        text={
+                            "format": {
+                                "type": "json_schema",
+                                "name": "paper_synthesis",
+                                "schema": SYNTHESIS_JSON_SCHEMA,
+                                "strict": True,
+                            }
+                        },
+                    )
+                    content = resp_api_response.output_text
+                    if resp_api_response.usage:
+                        prompt_tokens = resp_api_response.usage.input_tokens
+                        completion_tokens = resp_api_response.usage.output_tokens
+                except Exception as responses_error:
+                    logger.warning(
+                        f"Responses API call failed for synthesis "
+                        f"({responses_error}), falling back to Chat Completions"
+                    )
+                    content = None
+
+            if content is None:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_content},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=self.temperature,
+                    max_tokens=2500,  # Larger limit for multi-paper synthesis
+                    response_format={"type": "json_object"}
+                )
+                content = response.choices[0].message.content
+                if hasattr(response, 'usage') and response.usage:
+                    prompt_tokens = response.usage.prompt_tokens
+                    completion_tokens = response.usage.completion_tokens
 
             # Track token usage
-            if hasattr(response, 'usage') and response.usage:
-                prompt_tokens = response.usage.prompt_tokens
-                completion_tokens = response.usage.completion_tokens
-                state["token_usage"]["input_tokens"] += prompt_tokens
-                state["token_usage"]["output_tokens"] += completion_tokens
-                logger.info(f"Synthesis token usage: {prompt_tokens} input, {completion_tokens} output")
+            state["token_usage"]["input_tokens"] += prompt_tokens
+            state["token_usage"]["output_tokens"] += completion_tokens
+            logger.info(f"Synthesis token usage: {prompt_tokens} input, {completion_tokens} output")
 
             # Parse response
-            synthesis_data = json.loads(response.choices[0].message.content)
+            synthesis_data = json.loads(content)
 
             # Normalize response to handle nested lists and mixed types
             synthesis_data = self._normalize_synthesis_response(synthesis_data)

@@ -21,6 +21,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Strict JSON schema for Responses API structured output (USE_RESPONSES_API=true).
+# Enforces field shape at generation time -- reduces, but does not replace,
+# the need for _normalize_analysis_response() below.
+ANALYSIS_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "methodology": {"type": "string"},
+        "key_findings": {"type": "array", "items": {"type": "string"}},
+        "conclusions": {"type": "string"},
+        "limitations": {"type": "array", "items": {"type": "string"}},
+        "main_contributions": {"type": "array", "items": {"type": "string"}},
+        "citations": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "methodology", "key_findings", "conclusions",
+        "limitations", "main_contributions", "citations"
+    ],
+    "additionalProperties": False,
+}
+
 
 class AnalyzerAgent:
     """Agent for analyzing individual papers with RAG."""
@@ -45,6 +65,11 @@ class AnalyzerAgent:
         self.model = model
         self.temperature = temperature
         self.timeout = timeout
+
+        # Feature flag: use Azure OpenAI Responses API (structured JSON-schema
+        # output) instead of Chat Completions. Falls back to Chat Completions
+        # per-call on any Responses API error -- see analyze_paper().
+        self.use_responses_api = os.getenv("USE_RESPONSES_API", "false").lower() == "true"
 
         # Circuit breaker for consecutive failures
         self.consecutive_failures = 0
@@ -233,29 +258,68 @@ CRITICAL JSON FORMATTING RULES:
             # Create prompt
             prompt = self._create_analysis_prompt(paper, context)
 
-            # Call Azure OpenAI with temperature=0 and output limits
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "You are a research paper analyst. Provide accurate, grounded analysis based only on the provided context."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=self.temperature,
-                max_tokens=1500,  # Limit output to prevent slow responses
-                response_format={"type": "json_object"}
-            )
+            # Call Azure OpenAI with temperature=0 and output limits.
+            # Responses API path (USE_RESPONSES_API=true) falls back to Chat
+            # Completions on any error, so a Responses-specific outage never
+            # breaks analysis -- same degrade-gracefully contract as before.
+            system_content = "You are a research paper analyst. Provide accurate, grounded analysis based only on the provided context."
+            content = None
+            usage_input = 0
+            usage_output = 0
+
+            if self.use_responses_api:
+                try:
+                    resp_api_response = self.client.responses.create(
+                        model=self.model,
+                        instructions=system_content,
+                        input=prompt,
+                        temperature=self.temperature,
+                        max_output_tokens=1500,
+                        text={
+                            "format": {
+                                "type": "json_schema",
+                                "name": "paper_analysis",
+                                "schema": ANALYSIS_JSON_SCHEMA,
+                                "strict": True,
+                            }
+                        },
+                    )
+                    content = resp_api_response.output_text
+                    if resp_api_response.usage:
+                        usage_input = resp_api_response.usage.input_tokens
+                        usage_output = resp_api_response.usage.output_tokens
+                except Exception as responses_error:
+                    logger.warning(
+                        f"Responses API call failed for {paper.arxiv_id} "
+                        f"({responses_error}), falling back to Chat Completions"
+                    )
+                    content = None
+
+            if content is None:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_content},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=self.temperature,
+                    max_tokens=1500,  # Limit output to prevent slow responses
+                    response_format={"type": "json_object"}
+                )
+                content = response.choices[0].message.content
+                if hasattr(response, 'usage') and response.usage:
+                    usage_input = response.usage.prompt_tokens
+                    usage_output = response.usage.completion_tokens
 
             # Track token usage (thread-safe)
-            if hasattr(response, 'usage') and response.usage:
-                with self.token_lock:
-                    self.batch_tokens["input"] += response.usage.prompt_tokens
-                    self.batch_tokens["output"] += response.usage.completion_tokens
-                    logger.info(f"Analyzer token usage for {paper.arxiv_id}: "
-                              f"{response.usage.prompt_tokens} input, "
-                              f"{response.usage.completion_tokens} output")
+            with self.token_lock:
+                self.batch_tokens["input"] += usage_input
+                self.batch_tokens["output"] += usage_output
+                logger.info(f"Analyzer token usage for {paper.arxiv_id}: "
+                          f"{usage_input} input, {usage_output} output")
 
             # Parse response
-            analysis_data = json.loads(response.choices[0].message.content)
+            analysis_data = json.loads(content)
 
             # Normalize response to ensure list fields are lists (not strings)
             analysis_data = self._normalize_analysis_response(analysis_data)

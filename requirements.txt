@@ -4,8 +4,15 @@
 gradio[oauth]>=6.0.0,<7.0.0
 langchain>=0.1.0
 langchain-openai>=0.0.5
-langgraph>=0.2.0
-openai>=1.0.0
+# Bounded at <2.0.0: Send's import path already moved once (langgraph.constants
+# -> langgraph.types) between major versions; an unbounded floor risks silently
+# resolving a version with a different StateGraph/conditional-edges API surface.
+langgraph>=1.0.0,<2.0.0
+# >=1.66.0: minimum version exposing client.responses.create() (Responses API),
+# used when USE_RESPONSES_API=true (agents/analyzer.py, agents/synthesis.py).
+# Verify against the actually-required minimum before deploying -- this repo
+# has been burned before by unbounded/unverified SDK version floors.
+openai>=1.66.0
 
 # Observability
 # Note: langfuse includes OpenAI integration - no separate langfuse-openai package needed

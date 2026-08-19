@@ -51,25 +51,25 @@ A production-ready multi-agent system that analyzes academic papers from arXiv, 
 - **LangGraph Orchestration**: Professional workflow management with conditional routing and checkpointing
 - **LangFuse Observability**: Automatic tracing of all agents, LLM calls, and RAG operations with performance analytics
 - **Semantic Caching**: Optimize costs by caching similar queries
-- **Deterministic Outputs**: Temperature=0 and structured outputs for reproducibility
+- **Deterministic Outputs**: Temperature=0 and structured outputs for reproducibility, with optional strict JSON-schema enforcement via Azure OpenAI's Responses API
 - **FastMCP Integration**: Auto-start MCP server with intelligent cascading fallback (MCP → Direct API)
 - **Robust Data Validation**: Multi-layer validation prevents pipeline failures from malformed data
-- **High Performance**: 4x faster with parallel processing (2-3 min for 5 papers)
+- **High Performance**: 4x faster with parallel processing (2-3 min for 5 papers), now via LangGraph's native `Send` API fan-out
 - **Smart Error Handling**: Circuit breaker, graceful degradation, friendly error messages
 - **Progressive UI**: Real-time updates as papers are analyzed with streaming results
 - **Smart Quality Filtering**: Automatically excludes failed analyses (0% confidence) from synthesis
 - **Enhanced UX**: Clickable PDF links, paper titles + confidence scores, status indicators
-- **Comprehensive Testing**: 77 total tests (24 analyzer + 38 FastMCP + 15 schema validators) with diagnostic tools
+- **Comprehensive Testing**: 90 total tests (24 analyzer + 38 FastMCP + 15 schema validators + 8 orchestration + others) with diagnostic tools
 - **Performance Analytics**: Track latency, token usage, costs, and error rates across all agents
 
 ## Architecture
 
 ### Agent Workflow
 
-**LangGraph Orchestration (v2.6):**
+**LangGraph Orchestration (v2.6, analyzer fan-out rebuilt on `Send` in v2.13):**
 ```
 User Query → Retriever → [Has papers?]
-              ├─ Yes → Analyzer (parallel 4x, streaming) → Filter (0% confidence) → Synthesis → Citation → User
+              ├─ Yes → Analyzer (Send-fanned, one node per paper, up to 4 concurrent) → Filter (0% confidence) → Synthesis → Citation → User
               └─ No → END (graceful error)
                 ↓
           [LangFuse Tracing for All Nodes]
@@ -79,11 +79,12 @@ User Query → Retriever → [Has papers?]
 - **LangGraph Workflow**: Conditional routing, automatic checkpointing with `MemorySaver`
 - **LangFuse Observability**: Automatic tracing of all agents, LLM calls, and RAG operations
 - **Progressive Streaming**: Real-time UI updates using Python generators
-- **Parallel Execution**: 4 papers analyzed concurrently with live status
+- **Parallel Execution**: Up to 4 papers analyzed concurrently, fanned out via LangGraph's native `Send` API (v2.13) — real OS-thread concurrency under LangGraph's own context-propagating executor, no manual `ThreadPoolExecutor`
 - **Smart Filtering**: Removes failed analyses (0% confidence) before synthesis
 - **Circuit Breaker**: Auto-stops after 2 consecutive failures
 - **Status Tracking**: ⏸️ Pending → ⏳ Analyzing → ✅ Complete / ⚠️ Failed
 - **Performance Analytics**: Track latency, tokens, costs, error rates per agent
+- **Structured Output (optional, v2.13)**: `USE_RESPONSES_API=true` switches the analyzer/synthesis LLM calls to Azure OpenAI's Responses API with strict JSON-schema enforcement, falling back to Chat Completions per-call on any error
 
 ### 4 Specialized Agents
 
@@ -93,12 +94,12 @@ User Query → Retriever → [Has papers?]
    - Extracts metadata (title, authors, abstract, publication date)
    - Chunks papers into 500-token segments with 50-token overlap
 
-2. **Analyzer Agent** (Performance Optimized v2.0)
-   - **Parallel processing**: Analyzes up to 4 papers simultaneously
+2. **Analyzer Agent** (Performance Optimized v2.0; parallelism rebuilt on LangGraph `Send` in v2.13)
+   - **Parallel processing**: Analyzes up to 4 papers simultaneously — one LangGraph node invocation per paper, fanned out via `Send` and capped at `max_concurrency=4` (previously a manual `ThreadPoolExecutor`)
    - **Circuit breaker**: Stops after 2 consecutive failures
    - **Timeout**: 60s with max_tokens=1500 for fast responses
    - Extracts methodology, findings, conclusions, limitations, contributions
-   - Returns structured JSON with confidence scores
+   - Returns structured JSON with confidence scores — strict JSON-schema enforced via the Responses API when `USE_RESPONSES_API=true`, loose JSON mode via Chat Completions otherwise
 
 3. **Synthesis Agent**
    - Compares findings across multiple papers
@@ -114,17 +115,17 @@ User Query → Retriever → [Has papers?]
 
 ## Technical Stack
 
-- **LLM**: Azure OpenAI (gpt-4o-mini) with temperature=0
+- **LLM**: Azure OpenAI (gpt-4o-mini) with temperature=0 — Chat Completions by default, or Responses API with strict JSON-schema output (`USE_RESPONSES_API=true`, v2.13)
 - **Embeddings**: Azure OpenAI text-embedding-3-small
 - **Vector Store**: ChromaDB with persistent storage
 - **Orchestration**: LangGraph with conditional routing and checkpointing
 - **Observability**: LangFuse for automatic tracing, performance analytics, and cost tracking
 - **Agent Framework**: Generator-based streaming workflow with progressive UI updates
-- **Parallel Processing**: ThreadPoolExecutor (4 concurrent workers) with as_completed for streaming
+- **Parallel Processing**: LangGraph's native `Send` API (v2.13) — one node invocation per paper, `max_concurrency=4`, real OS-thread concurrency via LangGraph's own context-propagating executor (replaces the earlier manual `ThreadPoolExecutor`)
 - **UI**: Gradio 6.0.2 with tabbed interface and real-time updates
 - **Data Source**: arXiv API (direct) or FastMCP server (optional, auto-start)
 - **MCP Integration**: FastMCP server with auto-start, intelligent fallback (MCP → Direct API)
-- **Testing**: pytest with comprehensive test suite (77 tests, pytest-asyncio for async tests)
+- **Testing**: pytest with comprehensive test suite (90 tests, pytest-asyncio for async tests)
 - **Type Safety**: Pydantic V2 schemas with multi-layer data validation
 - **Pricing**: Configurable pricing system (JSON + environment overrides)
 
@@ -179,6 +180,15 @@ Optional:
 - `USE_MCP_ARXIV`: Set to `true` to use FastMCP server (auto-start) instead of direct arXiv API (default: `false`)
 - `MCP_ARXIV_STORAGE_PATH`: Path where MCP server stores papers (default: `./data/mcp_papers/`)
 - `FASTMCP_SERVER_PORT`: Port for FastMCP server (default: `5555`)
+
+**Responses API (Optional, v2.13)**:
+- `USE_RESPONSES_API`: Set to `true` to use Azure OpenAI's Responses API (strict JSON-schema structured output) in the analyzer/synthesis agents instead of Chat Completions loose JSON mode (default: `false`). Falls back to Chat Completions per-call on any Responses API error.
+
+**Validating Responses API Availability**: Responses API requires a newer `AZURE_OPENAI_API_VERSION` than Chat Completions, and availability varies by resource/deployment/region. Before enabling, run:
+```bash
+python scripts/validate_responses_api.py
+```
+This probes your actual Azure OpenAI resource, reports the minimum working `api-version`, and confirms bumping it doesn't break embeddings or the Chat Completions fallback (both read the same `AZURE_OPENAI_API_VERSION`).
 
 **LangFuse Observability** (Optional):
 - `LANGFUSE_ENABLED`: Enable LangFuse tracing (default: `true`; set to `false` to disable)
@@ -297,7 +307,7 @@ Multi-Agent-Research-Paper-Analysis-System/
 ├── agents/
 │   ├── __init__.py
 │   ├── retriever.py               # Paper retrieval & chunking (with @observe)
-│   ├── analyzer.py                # Individual paper analysis (parallel + streaming, with @observe)
+│   ├── analyzer.py                # Individual paper analysis (Send-fanned parallel, optional Responses API, with @observe)
 │   ├── synthesis.py               # Cross-paper synthesis (with @observe)
 │   └── citation.py                # Citation validation & formatting (with @observe)
 ├── rag/
@@ -307,8 +317,8 @@ Multi-Agent-Research-Paper-Analysis-System/
 │   └── retrieval.py               # RAG retrieval & context formatting (with @observe)
 ├── orchestration/                  # LangGraph workflow orchestration (NEW v2.6)
 │   ├── __init__.py
-│   ├── nodes.py                   # Node wrappers with LangFuse tracing
-│   └── workflow_graph.py          # LangGraph workflow builder
+│   ├── nodes.py                   # Node wrappers with LangFuse tracing; analyzer fanned out per-paper via Send (v2.13)
+│   └── workflow_graph.py          # LangGraph workflow builder; max_concurrency=4 for analyzer fan-out (v2.13)
 ├── observability/                  # LangFuse observability (NEW v2.6)
 │   ├── __init__.py
 │   ├── trace_reader.py            # Trace querying and export API
@@ -323,13 +333,14 @@ Multi-Agent-Research-Paper-Analysis-System/
 │   ├── cache.py                   # Semantic caching layer
 │   ├── config.py                  # Configuration management (Azure, LangFuse, MCP, Pricing)
 │   ├── schemas.py                 # Pydantic data models (with validators)
-│   ├── langgraph_state.py         # LangGraph state TypedDict (NEW v2.6)
+│   ├── langgraph_state.py         # LangGraph state TypedDict; analyses/errors/token_usage reducers for Send fan-out (NEW v2.6, reducers added v2.13)
 │   ├── langfuse_client.py         # LangFuse client and helpers (NEW v2.6)
 │   └── trace_context.py           # trace_id log correlation via contextvars (NEW v2.10)
 ├── config/
 │   └── pricing.json               # Model pricing configuration
 ├── scripts/
-│   └── validate_langfuse_keys.py  # Live LangFuse API key validation CLI (NEW v2.9)
+│   ├── validate_langfuse_keys.py  # Live LangFuse API key validation CLI (NEW v2.9)
+│   └── validate_responses_api.py  # Live Azure OpenAI Responses API availability check (NEW v2.13)
 ├── tests/
 │   ├── __init__.py
 │   ├── test_analyzer.py           # Unit tests for analyzer agent (24 tests)
@@ -337,7 +348,8 @@ Multi-Agent-Research-Paper-Analysis-System/
 │   ├── test_schema_validators.py  # Unit tests for Pydantic validators (15 tests)
 │   ├── test_data_validation.py    # Data validation test script
 │   ├── test_trace_reader.py       # Unit tests for TraceReader v3 query API (NEW v2.11)
-│   └── test_analytics.py          # Unit tests for get_verified_trace_cost (NEW v2.11)
+│   ├── test_analytics.py          # Unit tests for get_verified_trace_cost (NEW v2.11)
+│   └── test_orchestration.py      # LangGraph Send fan-out, reducer, and barrier-semantics tests (NEW v2.13)
 ├── REFACTORING_SUMMARY.md         # LangGraph + LangFuse refactoring details (NEW v2.6)
 ├── BUGFIX_MSGPACK_SERIALIZATION.md # msgpack serialization fix documentation (NEW v2.6)
 ├── FASTMCP_REFACTOR_SUMMARY.md    # FastMCP architecture guide
@@ -360,7 +372,7 @@ The system provides real-time feedback during analysis with a generator-based st
    - ✅ **Complete**: Analysis successful with confidence score
    - ⚠️ **Failed**: Analysis failed (0% confidence, excluded from synthesis)
 2. **Incremental Results**: Analysis tab populates as each paper completes
-3. **ThreadPoolExecutor**: Up to 4 papers analyzed concurrently with `as_completed()` for streaming
+3. **LangGraph `Send` Fan-Out** (v2.13): Up to 4 papers analyzed concurrently, one node invocation per paper, `max_concurrency=4` — real OS-thread concurrency via LangGraph's own context-propagating executor (previously a manual `ThreadPoolExecutor` with `as_completed()`)
 4. **Python Generators**: Uses `yield` to stream results without blocking
 
 ### Deterministic Output Strategy
@@ -368,7 +380,7 @@ The system provides real-time feedback during analysis with a generator-based st
 The system implements multiple techniques to minimize hallucinations:
 
 1. **Temperature=0**: All Azure OpenAI calls use temperature=0
-2. **Structured Outputs**: JSON mode for agent responses with strict schemas
+2. **Structured Outputs**: JSON mode for agent responses with strict schemas — optionally enforced at the API layer via Azure OpenAI's Responses API strict `json_schema` mode (`USE_RESPONSES_API=true`, v2.13), on top of the existing prompt-level and Pydantic-validator layers
 3. **RAG Grounding**: Every response includes retrieved chunk IDs
 4. **Source Validation**: Cross-reference all claims with original text
 5. **Semantic Caching**: Hash query embeddings, return cached results for cosine similarity >0.95
@@ -399,7 +411,7 @@ The system includes comprehensive observability powered by LangFuse, built on th
 - LLM calls captured with prompts, completions, tokens, and costs
 - RAG operations tracked (embeddings, vector search)
 - Workflow state transitions logged
-- **Single trace per query**: one root `research_workflow_run` trace per workflow execution (tagged with session ID), with every agent/node span and LLM generation correctly nested underneath — including calls made from the analyzer's parallel `ThreadPoolExecutor` workers, which require explicit `contextvars` propagation to nest correctly (v2.9)
+- **Single trace per query**: one root `research_workflow_run` trace per workflow execution (tagged with session ID), with every agent/node span and LLM generation correctly nested underneath — including calls made from the analyzer's parallel branches. Originally required explicit `contextvars` propagation around a manual `ThreadPoolExecutor` (v2.9); since v2.13's `Send`-based fan-out, LangGraph's own context-propagating executor handles this automatically, verified live against a real trace
 
 **Performance Analytics:**
 ```python
@@ -481,7 +493,7 @@ pytest tests/test_analyzer.py::TestAnalyzerAgent::test_analyze_paper_success -v
 
 ### Test Coverage
 
-**Current Test Suite (77 tests total):**
+**Current Test Suite (90 tests total):**
 
 1. **Analyzer Agent** (`tests/test_analyzer.py`): 24 comprehensive tests
    - Unit tests for initialization, prompt creation, and analysis
@@ -533,6 +545,14 @@ pytest tests/test_analyzer.py::TestAnalyzerAgent::test_analyze_paper_success -v
    - PDF processor resilience with malformed data
    - End-to-end data flow validation
 
+5. **Orchestration** (`tests/test_orchestration.py`): 8 tests ✨ NEW v2.13 — `orchestration/` had zero test coverage before this
+   - **Reducer correctness**: fan-out over N papers produces exactly N merged `analyses` entries (guards against a missing/misconfigured reducer silently collapsing results to 1)
+   - **Barrier semantics**: downstream nodes (filter/synthesis/citation) run exactly once per workflow execution, not once per fanned-out branch
+   - **Partial-failure isolation**: one paper's analysis failing doesn't affect others' results, and is correctly reported in `errors` without being added to `analyses`
+   - **Token usage reducer**: per-branch token deltas merge correctly via `merge_token_usage()`
+   - **`max_concurrency` config**: confirms the `Send` fan-out's concurrency cap is actually passed to `app.invoke()`
+   - **Circuit breaker under new dispatch**: still trips correctly after consecutive failures when the analyzer runs via `Send` instead of a manual `ThreadPoolExecutor`
+
 **What's Tested:**
 - ✅ Agent initialization and configuration
 - ✅ Individual paper analysis workflow
@@ -549,12 +569,12 @@ pytest tests/test_analyzer.py::TestAnalyzerAgent::test_analyze_paper_success -v
 - ✅ Pydantic field_validators for all schema types ✨ NEW
 - ✅ Recursive list flattening and type coercion ✨ NEW
 - ✅ Triple-layer validation (prompts + agents + schemas) ✨ NEW
+- ✅ LangGraph `Send` fan-out reducer correctness, barrier semantics, and partial-failure isolation ✨ NEW v2.13
 
 **Coming Soon:**
 - Tests for Retriever Agent (arXiv download, PDF processing)
 - Tests for Synthesis Agent (cross-paper comparison)
 - Tests for Citation Agent (APA formatting, validation)
-- Integration tests for full workflow
 - RAG component tests (vector store, embeddings, retrieval)
 
 ### Test Architecture
@@ -589,6 +609,8 @@ Tests use:
 **Cost**: <$0.50 per analysis session
 **Accuracy**: Deterministic outputs with confidence scores
 **Scalability**: 1-20 papers with graceful error handling
+
+**Note (v2.13)**: the underlying parallel-execution mechanism changed from a manual `ThreadPoolExecutor` to LangGraph's native `Send` API (see [Changelog](#changelog)), but the concurrency characteristics above are preserved — still up to 4 papers analyzed concurrently, verified live with real overlapping execution.
 
 ## Deployment
 
@@ -642,8 +664,9 @@ This repository includes a GitHub Actions workflow that automatically syncs to H
 4. Optional: Add LangFuse secrets for observability:
    - `LANGFUSE_PUBLIC_KEY`
    - `LANGFUSE_SECRET_KEY`
-5. Set startup command to `bash huggingface_startup.sh`
-6. The app will automatically deploy with environment validation
+5. Optional: Add `USE_RESPONSES_API=true` for strict JSON-schema structured output (v2.13) — verify with `python scripts/validate_responses_api.py` against your resource first, since it requires a newer `AZURE_OPENAI_API_VERSION` than the default and availability varies by resource/region
+6. Set startup command to `bash huggingface_startup.sh`
+7. The app will automatically deploy with environment validation
 
 **Common Issues:**
 - **404 Error**: Missing `AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME` - add it to secrets
@@ -748,7 +771,53 @@ For issues, questions, or feature requests, please:
 
 ## Changelog
 
-### Version 2.12 - August 2026 (Latest)
+### Version 2.13 - August 2026 (Latest)
+
+**🔎 Evaluated: Microsoft Foundry Agent Service (Not Adopted)**
+
+Investigated migrating from direct Azure OpenAI calls to Microsoft Foundry Agent Service. Rejected: its only real differentiator — Connected Agents multi-agent orchestration — requires handing step-sequencing to an LLM's runtime judgment at inference time, incompatible with this pipeline's deterministic routing (`should_continue_after_retriever`/`should_continue_after_filter` must stay pure, testable functions, not implicit model decisions). Its other pitched benefits (structured output, evaluators, content safety) turned out to be reachable more cheaply without adopting the platform — no code changed as a result of this evaluation; LangGraph remains the sole orchestrator, unchanged in shape. The leaner strategy that came out of this analysis is what shipped below instead.
+
+**🆕 New: Azure OpenAI Responses API (Optional, `USE_RESPONSES_API`)**
+
+- ✅ **Strict JSON-schema structured output** — `agents/analyzer.py`/`agents/synthesis.py` can now call `client.responses.create(...)` with `text={"format": {"type": "json_schema", ..., "strict": true}}` instead of Chat Completions' loose `response_format={"type": "json_object"}` mode, enforcing field shape (required keys, types, no nested-array surprises) at generation time. Falls back to Chat Completions per-call on any Responses API error — never a hard failure. `_normalize_*_response()` and the Pydantic `field_validator`s are kept regardless of path (defense-in-depth, not replaced by schema enforcement).
+- ✅ **Same SDK, no new infrastructure** — uses the same `openai` package and `AzureOpenAI` client construction as today, no new Azure resource, no Entra ID/auth changes. Default `false`; opt-in.
+- ✅ **Verified live against a real Azure OpenAI resource, not just mocked** — the currently-configured API version (`2024-02-01`) 404's on Responses API. Probing forward found the exact cutoff, straight from Azure's own error message: *"Azure OpenAI Responses API is enabled only for api-version 2025-03-01-preview and later."* Also confirmed at that version: the strict `json_schema` structured-output call works end-to-end (parses correctly, `usage.input_tokens`/`.output_tokens` populate as expected), and — since `rag/embeddings.py` reads the *same* `AZURE_OPENAI_API_VERSION` env var — that bumping it doesn't break embeddings or the Chat Completions fallback.
+- ✅ New `scripts/validate_responses_api.py` — standalone CLI (matching the existing `validate_langfuse_keys.py`/`validate_azure_embeddings.py` convention) that probes your actual resource for the minimum working API version and confirms embeddings/Chat Completions aren't broken by the bump. Run before enabling `USE_RESPONSES_API=true`.
+
+**🆕 New: LangGraph `Send`-Based Analyzer Parallelism**
+
+- ✅ **Replaces the manual `ThreadPoolExecutor`** in `AnalyzerAgent.run()` with LangGraph's native `Send` API — `should_continue_after_retriever()` now fans out to one `analyzer` node invocation per paper instead of routing to a single whole-batch node. `AnalyzerAgent.run()` itself is unchanged and still directly unit-tested, just no longer wired into the graph.
+- ✅ **Real concurrency confirmed, not assumed** — verified directly against the installed `langgraph` package source that `Send`-dispatched branches get real OS-thread concurrency even under this app's synchronous `app.invoke()` call, via LangGraph's own context-propagating thread pool. The manual `contextvars.copy_context()` wrapping the old `ThreadPoolExecutor` needed (to keep LangFuse spans nested — threads don't inherit `contextvars` automatically) is no longer required for this path.
+- ✅ **Old concurrency cap preserved explicitly** — `min(4, len(papers))` is now `"max_concurrency": 4` in the `app.invoke()`/`app.astream()` config. This has to be explicit: omitting it silently raises the ceiling to the executor's default (`min(32, os.cpu_count()+4)`), a real increase in concurrent LLM calls with nothing to flag it.
+- ✅ **Verified live with real parallel execution**, not just passing tests: ran a real 3-paper query end-to-end (real arXiv retrieval, real embeddings, real Responses API calls). Log evidence of genuine concurrency: all three `analyze_paper` calls started within 2ms of each other, RAG retrieval sub-queries for all three papers interleaved in the log rather than running sequentially, and all three analyses completed within a 6.2s window despite each individually taking several seconds — total wall time ≈ the slowest single call, not the sum of all three.
+
+**🐛 Fixed (uncovered while building the above, not a pre-existing incident)**
+
+- **Every node in `orchestration/nodes.py` returned the whole mutated state object instead of a partial delta.** Harmless before any reducer existed, but became a real bug the moment `AgentState.analyses`/`errors`/`token_usage` needed reducers to support the `Send` fan-out: a reducer re-applies on *every* node return that includes that key, so returning the full state (which already carries the accumulated value) re-merges and duplicates it on every subsequent node. Reproduced directly against the installed LangGraph before fixing — a 3-item reducer-tracked list became **12** after three sequential full-state-returning node passes (3 → 6 → 12, doubling each time). Fixed by having every node wrapper return only the keys it actually changed; the underlying agents' `run(state) -> state` contracts are unchanged.
+
+**🧪 New Test Coverage**
+
+- ✅ `tests/test_orchestration.py` (8 tests, new file) — `orchestration/` had zero test coverage before this release. Covers reducer correctness (fan-out produces N merged analyses, not 1 — the exact bug class above), Pregel barrier semantics (downstream nodes run exactly once, not once per branch), partial-failure isolation, `max_concurrency` config presence, and circuit-breaker behavior under the new per-paper dispatch.
+- ✅ Full suite: 90 tests total (up from 82), zero new regressions — same 16 pre-existing failures unrelated to this change.
+
+**Changed:**
+- `requirements.txt`: `langgraph>=0.2.0` (unbounded floor, far below the installed `1.0.3`) tightened to `langgraph>=1.0.0,<2.0.0` — `Send`'s import path already moved once between major versions (`langgraph.constants` → `langgraph.types`), the same unbounded-floor pattern this codebase has been burned by twice before (LangFuse in v2.9, `arxiv` in v2.9). `openai>=1.0.0` raised to `openai>=1.66.0`, the minimum version exposing `client.responses.create()`.
+- `.env`/`.env.example`: `AZURE_OPENAI_API_VERSION` bumped to `2025-03-01-preview`; added `USE_RESPONSES_API` (default `false`).
+
+**Files Modified:**
+- `agents/analyzer.py`, `agents/synthesis.py`: Responses API path with JSON-schema structured output and fallback
+- `utils/langgraph_state.py`: `operator.add`/`merge_token_usage` reducers on `analyses`/`errors`/`token_usage`, added `processing_time` to the schema
+- `orchestration/nodes.py`: `Send`-based fan-out (`analyzer_paper_node`, updated `should_continue_after_retriever`), every node converted to return partial deltas
+- `orchestration/workflow_graph.py`: node registration for `Send` dispatch, `max_concurrency=4` on invoke config
+- `orchestration/__init__.py`: updated exports (`analyzer_node` → `analyzer_paper_node`)
+- `requirements.txt`, `.env.example`, `.env`: version floor tightening, new env vars
+- `scripts/validate_responses_api.py`: new diagnostic script
+- `tests/test_orchestration.py`: new test file
+- `CLAUDE.md`, `README.md`: updated to reflect the new architecture
+
+---
+
+### Version 2.12 - August 2026
 
 **🧹 Removed: Legacy MCP Client**
 
@@ -1377,6 +1446,10 @@ A second, unrelated dependency-drift bug surfaced on the same deploy: `'Search' 
 - ✅ Added QUICKSTART.md for quick setup
 
 ### Completed Features (Recent)
+- [x] Azure OpenAI Responses API with strict JSON-schema structured output (optional, `USE_RESPONSES_API`) ✨ NEW (v2.13)
+- [x] LangGraph `Send`-based analyzer parallelism, replacing the manual `ThreadPoolExecutor` ✨ NEW (v2.13)
+- [x] `AgentState` reducers (`operator.add`, `merge_token_usage`) supporting parallel fan-out ✨ NEW (v2.13)
+- [x] Orchestration test coverage (`tests/test_orchestration.py`, 8 tests — previously zero) ✨ NEW (v2.13)
 - [x] LangGraph workflow orchestration with conditional routing ✨ NEW (v2.6)
 - [x] LangFuse observability with automatic tracing ✨ NEW (v2.6)
 - [x] Performance analytics API (latency, tokens, costs, errors) ✨ NEW (v2.6)
@@ -1403,7 +1476,6 @@ A second, unrelated dependency-drift bug surfaced on the same deploy: `'Search' 
 
 ### Coming Soon
 - [ ] Tests for Retriever, Synthesis, and Citation agents
-- [ ] Integration tests for full LangGraph workflow
 - [ ] CI/CD pipeline with automated testing (GitHub Actions already set up for deployment)
 - [ ] Docker containerization improvements
 - [ ] Performance benchmarking suite with LangFuse analytics
