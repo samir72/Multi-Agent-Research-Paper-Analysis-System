@@ -603,6 +603,29 @@ See `observability/README.md` for comprehensive documentation.
 
 ## Version History and Recent Changes
 
+### Version 2.14: Observability Query Fix, Test-Suite Recovery, and Ship/Verify-Trace Skills
+
+**Context**: This release consolidates four rounds of work from a single audit-driven session: a live-verified performance bug in the observability read API, recovery of 16 silently-failing pre-existing tests (test-suite drift, not new regressions), the repo's first automated coverage for the Responses API structured-output path, and two new Claude Code skills (`ship`, `verify-trace`) meant to make future sessions repeat this kind of rigor without a human having to ask for it explicitly each time.
+
+**Fixed:**
+- **`TraceReader.filter_by_agent()` reliably timed out** on the two highest-volume agent names (`"analyzer_agent"`, `"retriever_agent"`) against this project's real LangFuse usage history — reproduced live twice (~5s, the SDK's default request timeout), while low-volume names (`"synthesis_agent"`, `"citation_agent"`) succeeded in 3-4s. Root cause: unlike `get_generations()`, `filter_by_agent()` had no `trace_id` parameter to scope the query server-side, so it always scanned by name across the whole project's history. Fixed by adding an optional `trace_id` param (verified live: 0.6s vs. timing out) and widening the request timeout to 30s via `request_options` for the remaining unscoped case (verified live: 2.7-3.8s, comfortably under budget).
+- **16 pre-existing test failures**, both drift, not regressions from any recent change:
+  - `tests/test_analyzer.py` (6 failures): fixture state dicts were missing the `token_usage` key that `AnalyzerAgent.run()` unconditionally mutates — real callers always provide it via `create_initial_state()`, but the fixtures predated that contract. Also hardened `run()` itself with `state.setdefault()` for `errors`/`token_usage`, since it's a public method any external caller could invoke with a partial state — verified live against real Azure OpenAI that a partial state used to silently discard an already-successfully-computed analysis (the LLM call succeeded, then a `KeyError` on the next line threw the result away); now it's returned.
+  - `tests/test_fastmcp_arxiv.py` (10 failures): tests mocked a `_get_client()` method that no longer exists on `FastMCPArxivClient` — the real client moved to per-operation `async with Client(self.server_url) as client:` connections at some point after v2.3, and the tests were never updated. Fixed by patching the module-level `Client` import as an async context manager instead.
+- **Stale code examples** in `CLAUDE.md`, `README.md`, and `AGENTS.md`: `run_workflow()`'s old `(workflow_app, initial_state, config, progress)` signature (three separate copies across two files) and `filter_by_agent(traces, agent_name=...)`'s old two-positional-arg call shape, both caught by two independent agents auditing this repo and confirmed by literally running the corrected examples against the real API.
+
+**Added:**
+- `trace_id` parameter on `TraceReader.filter_by_agent()` (see Fixed above).
+- Responses API test coverage (`USE_RESPONSES_API=true` success + fallback-on-error, mocked) for both `agents/analyzer.py` and `agents/synthesis.py` — previously the feature's only verification was a manual live run, not CI.
+- `tests/test_synthesis.py` (11 tests) — `SynthesisAgent` had zero test coverage before this release.
+- `.claude/skills/ship/SKILL.md` and `.claude/skills/verify-trace/SKILL.md` — codify two workflows this repo was already running by hand every session: the secret-scan/docs-staleness/tests/commit close-out ritual, and live end-to-end LangFuse trace verification (SDK version check, real workflow run, `TraceReader` query, log-correlation check). `ship` was itself revised mid-session after its doc-staleness step was found to have missed `README.md`/`AGENTS.md` across two prior runs — it now names both explicitly with concrete `grep`/`pytest --collect-only` commands instead of a general "check for staleness" instruction, plus a step for drafting version changelog entries like this one.
+
+**Verified live** (not just unit-tested): the `filter_by_agent()` fix, against the real LangFuse project and a real trace produced by an end-to-end workflow run (real arXiv retrieval, real Azure OpenAI calls under `USE_RESPONSES_API=true`); the `AnalyzerAgent.run()` partial-state fix, against real Azure OpenAI with a paper already indexed in the vector store from that same run.
+
+**Test suite**: 105/105 passing, 0 failures (up from a 74-passed/16-failed baseline at the start of this session) — the 16 pre-existing failures above are gone, not carried forward.
+
+**Lesson reinforced**: two more instances of this codebase's recurring pattern — an instruction existing in prose (CLAUDE.md's own usage examples, the `ship` skill's step naming `README.md`) doesn't guarantee it's followed; both times, the gap was only caught by actually running the code (live API calls) or by a second explicit audit pass, not by re-reading the docs more carefully.
+
 ### Version 2.13: Azure OpenAI Responses API + LangGraph `Send`-based Analyzer Parallelism
 
 **Context**: Evaluated migrating from direct Azure OpenAI calls to Microsoft Foundry Agent Service; rejected because its only real differentiator (Connected Agents multi-agent orchestration) requires handing step-sequencing to an LLM's runtime judgment, incompatible with this pipeline's deterministic routing (`should_continue_after_retriever`/`should_continue_after_filter` must stay pure, testable functions). Its other pitched benefits (structured output, evaluators, content safety) were reachable more cheaply without adopting the platform. This release implements the resulting leaner strategy instead: LangGraph remains the sole orchestrator, unchanged in shape.

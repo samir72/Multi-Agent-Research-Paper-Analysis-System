@@ -767,7 +767,40 @@ For issues, questions, or feature requests, please:
 
 ## Changelog
 
-### Version 2.13 - August 2026 (Latest)
+### Version 2.14 - August 2026 (Latest)
+
+**🆕 New: Claude Code Skills (`ship`, `verify-trace`)**
+
+- ✅ Codifies two workflows this session ran by hand repeatedly: `ship` (secret scan → doc-staleness check → tests → changelog draft → commit/push) and `verify-trace` (installed LangFuse SDK version check → real workflow run → `TraceReader` query → log-correlation check).
+- ✅ `ship`'s own doc-staleness step needed a follow-up fix mid-session: it named `README.md` but got skipped across two runs anyway, only caught by a manual audit. Tightened to name `README.md`/`AGENTS.md` explicitly with concrete `grep`/`pytest --collect-only` commands, plus this changelog-drafting step.
+
+**🐛 Fixed: `TraceReader.filter_by_agent()` Timeout**
+
+- ✅ Reliably timed out (verified live, twice) on the two highest-volume agent names in this project's real LangFuse history — not a systemic outage, just an unscoped query with no way to narrow it. Added an optional `trace_id` param (0.6s vs. timing out, verified live) and widened the unscoped-query timeout to 30s (2.7-3.8s, verified live).
+
+**🐛 Fixed: 16 Pre-Existing Test Failures (Drift, Not Regressions)**
+
+- ✅ `tests/test_analyzer.py` (6 failures): fixtures missing `token_usage`, out of sync with `AnalyzerAgent.run()`'s real contract. Also hardened `run()` with `state.setdefault()` for `errors`/`token_usage` — verified live that a partial state used to compute a real analysis via a real Azure OpenAI call, then silently discard it on the next line; now it's returned.
+- ✅ `tests/test_fastmcp_arxiv.py` (10 failures): tests mocked a `_get_client()` method removed from `FastMCPArxivClient` at some point after v2.3. Fixed by patching the real `Client` import as an async context manager.
+- ✅ 3 stale code examples across `CLAUDE.md`/`README.md`/`AGENTS.md` (old `run_workflow()` signature, old `filter_by_agent()` call shape) — caught by two independent audits and confirmed fixed by literally running the corrected examples.
+
+**🧪 New Test Coverage**
+
+- ✅ `tests/test_synthesis.py` (11 tests, new file) — `SynthesisAgent` had zero coverage before this release.
+- ✅ `USE_RESPONSES_API=true` path (success + fallback-on-error, mocked) for both Analyzer and Synthesis agents — previously verified only by a manual live run, not CI.
+- ✅ Full suite: 105 tests total (up from 90), 105/105 passing — the 16 pre-existing failures above are gone, not carried forward as known issues.
+
+**Files Modified:**
+- `observability/trace_reader.py`, `tests/test_trace_reader.py`: `filter_by_agent()` trace_id param + timeout fix
+- `agents/analyzer.py`: `state.setdefault()` hardening for `errors`/`token_usage`
+- `tests/test_analyzer.py`, `tests/test_fastmcp_arxiv.py`: fixed 16 pre-existing failures
+- `tests/test_synthesis.py`: new file, first SynthesisAgent test coverage
+- `.claude/skills/ship/SKILL.md`, `.claude/skills/verify-trace/SKILL.md`: new Claude Code skills
+- `CLAUDE.md`, `README.md`, `AGENTS.md`, `observability/README.md`: stale example fixes, test-count corrections, new documentation for previously-undocumented scripts/config
+
+---
+
+### Version 2.13 - August 2026
 
 **🔎 Evaluated: Microsoft Foundry Agent Service (Not Adopted)**
 
