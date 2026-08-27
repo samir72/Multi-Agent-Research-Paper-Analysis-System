@@ -582,7 +582,7 @@ See `observability/README.md` for comprehensive documentation.
 - `utils/arxiv_client.py`: Direct arXiv API client with retry logic
 - `utils/fastmcp_arxiv_client.py`: FastMCP client (recommended)
 - `utils/fastmcp_arxiv_server.py`: FastMCP server with auto-start
-- `utils/semantic_cache.py`: Query caching with embeddings
+- `utils/cache.py`: `SemanticCache` — query caching with embeddings (cosine similarity ≥ 0.95)
 
 ### Configuration
 - `config/pricing.json`: Per-model input/output/embedding token pricing used by `CitationAgent`'s cost estimates, loaded via `utils/config.py::PricingConfig`. Overridable per-deployment with `PRICING_INPUT_PER_1M`/`PRICING_OUTPUT_PER_1M`/`PRICING_EMBEDDING_PER_1M` in `.env`.
