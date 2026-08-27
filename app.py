@@ -72,7 +72,7 @@ def validate_environment():
     logger.info(f"Azure OpenAI Endpoint: {os.getenv('AZURE_OPENAI_ENDPOINT')}")
     logger.info(f"LLM Deployment: {os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME')}")
     logger.info(f"Embedding Deployment: {os.getenv('AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME')}")
-    logger.info(f"API Version: {os.getenv('AZURE_OPENAI_API_VERSION', '2024-02-01')}")
+    logger.info(f"API Version: {os.getenv('AZURE_OPENAI_API_VERSION')}")
 
 # Validate environment before importing other modules
 validate_environment()
